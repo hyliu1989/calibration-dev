@@ -1,0 +1,44 @@
+[project]
+name = "calibration"
+version = "0.1.0"
+description = "Extrinsics calibration"
+authors = [
+    { name = "Hsiou-Yuan Liu", email = "herbert@nodarsensor.com" }
+]
+dependencies = [
+    "contexttimer",
+    "numpy",
+    "opencv-contrib-python",
+    "pyhammer",
+    "scipy",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+pyhammer = [
+  # This is a required dependency that, however, gets put here to
+  # 1. avoid lengthy reinstallation
+  # 2. allow development installation for Hammerhead Python.
+  "pyhammer @ git+ssh://git@github.com/nodarsensor/hammerhead.git@python-dev"
+]
+runtime = [
+    "matplotlib",
+    "matplotlib-inline",
+    "jupyterlab",
+    "jupyterlab_server",
+    "jupyter_core",
+    "jupyterlab_widgets",
+    "webcolors",
+    "notebook",
+    "ipympl",
+    "pillow",
+    "websocket-client",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["calibration*"]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
