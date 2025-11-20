@@ -16,10 +16,11 @@ dependencies = [
 
 [project.optional-dependencies]
 pyhammer = [
-  # This is a required dependency that, however, gets put here to
-  # 1. avoid lengthy reinstallation
-  # 2. allow development installation for Hammerhead Python.
-  "pyhammer @ git+ssh://git@github.com/nodarsensor/hammerhead.git@python-dev"
+    # This is a required dependency that, however, gets put here to
+    # 1. avoid lengthy re-installation of pyhammer which requires compiling and packaging.
+    # 2. allow development installation for Hammerhead Python.
+    # The tracked branches are hl/python/jdsns and python-dev.
+    "pyhammer @ git+ssh://git@github.com/nodarsensor/hammerhead.git@a08a38457bcdc9e91e6b10235abe4fe979e76db4"
 ]
 runtime = [
     "matplotlib",
