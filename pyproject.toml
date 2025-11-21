@@ -12,6 +12,7 @@ dependencies = [
     "pyhammer",
     "scipy",
     "tqdm",
+    "omniglue @ git+ssh://git@github.com/hyliu1989/omniglue.git@236b7a5d43ff124896945c0ddfda05787b0a2330"
 ]
 
 [project.optional-dependencies]
