@@ -1,3 +1,4 @@
+"""A module performing extrinsics calibration."""
 import itertools
 import logging
 import math
