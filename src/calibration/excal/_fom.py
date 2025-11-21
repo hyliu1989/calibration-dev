@@ -12,7 +12,6 @@ import numpy as np
 import numpy.typing as npt
 import pyhammer
 import tqdm
-from matplotlib import pyplot as plt
 from pyhammer.cpyhammer import FomCalculator
 from pyhammer.rectification import windowed_planner_wrap
 from pyhammer.trinsics import BaselineFrameStereoState
@@ -20,9 +19,12 @@ from pyhammer.trinsics import IntrinsicsBase
 from scipy.spatial.transform import Rotation
 
 import calibration.optimiz as optimiz
-from calibration.specs import PixelDeviationToAngle
+import calibration.excal.specs as specs
+from calibration.excal.specs import SpecValue
+
 
 logger = logging.getLogger(__name__)
+__all__ = ["StateComposer", "InitialCalibration"]
 
 
 class StateComposer:
@@ -92,8 +94,10 @@ class XZSearchHelper:
 
     It is responsible for forming the state from the angles and wrapping the basic FOM calculation so that the input is
     the two angles.
+
+    fom_calc must be provided before calling f().
     """
-    def __init__(self, image1, i1, image2, i2, fom_calc: FomCalculator, base_state: BaselineFrameStereoState):
+    def __init__(self, image1, i1, image2, i2, fom_calc: FomCalculator | None, base_state: BaselineFrameStereoState):
         self.image1_gpu = pyhammer.gpu_mat(image1)
         self.i1 = i1
         self.image2_gpu = pyhammer.gpu_mat(image2)
@@ -286,6 +290,68 @@ class InitialCalibration:
             raise NotImplementedError(f"roi_directive={roi_directive} is not implemented.")
         self.fom_x_roi = [FomCalculator.create(p, **fom_calc_kwargs) for p in self.x_roi_planners]
         self.fom_z_roi = [FomCalculator.create(p, **fom_calc_kwargs) for p in self.z_roi_planners]
+
+    @staticmethod
+    def get_basic_refinement_specs() -> dict[str, tuple[SpecValue, SpecValue]]:
+        """Returns the basic refinement specifications for calibrate().
+
+        This is based on Hammerhead specs:
+            calibration_params.delta_x = 0.468509;  // unit: pixels
+            calibration_params.delta_y = 4.37411;  // unit:pixels
+            calibration_params.delta_z = 0.251327;  // unit: pixels
+            calibration_params.vib_x = 46.8509;  // unit: pixels
+            calibration_params.vib_y = 0;  // unit: pixels
+            calibration_params.vib_z = 12.5664;  // unit: pixels
+
+            // angle from Ty. This is a roll angle.
+            calibration_params.min_angle_y = -25.1327;  // unit: pixels
+            calibration_params.max_angle_y = 25.1327;  // unit: pixels
+            calibration_params.acc_y = 1.00531;  // unit: pixels
+
+            // Angle from Tz. This is a yaw angle.
+            calibration_params.min_angle_z = -0.869913;  // unit: pixels
+            calibration_params.max_angle_z = 0.871543;  // unit: pixels
+            calibration_params.acc_z = 0.435567;  // unit: pixels
+        """
+        return dict(
+            search_range_and_tol_diff_y=(SpecValue(0.000000000, "p"), SpecValue(4.374110, "p")),
+            search_range_and_tol_comm_y=(SpecValue(0.000000000, "p"), SpecValue(4.374110, "p")),
+            search_range_and_tol_diff_x=(SpecValue(2 * 46.8509, "p"), SpecValue(0.468509, "p")),
+            search_range_and_tol_diff_z=(SpecValue(2 * 12.5664, "p"), SpecValue(0.251327, "p")),
+            search_range_and_tol_comm_z=(SpecValue(25.1327 - -25.1327, "p"), SpecValue(1.00531, "p")),
+            search_range_and_tol_comm_y_golden=(SpecValue(0.871543 - -0.869913, "p"), SpecValue(0.435567, "p")),
+        )
+
+    @staticmethod
+    def get_basic_factory_calibration_specs():
+        """Returns the basic factory calibration specifications for calibrate().
+
+        This is based on Hammerhead specs:
+            calibration_params.delta_x = 0.937018;  // unit: pixels
+            calibration_params.delta_y = 4.37411;  // unit:pixels
+            calibration_params.delta_z = 0.502655;  // unit: pixels
+            calibration_params.vib_x = 281.106;  // unit: pixels
+            calibration_params.vib_y = 13.2469;  // unit: pixels
+            calibration_params.vib_z = 75.3982;  // unit: pixels
+
+            // angle from Ty. This is a roll angle.
+            calibration_params.min_angle_y = -75.3982;  // unit: pixels
+            calibration_params.max_angle_y = 75.3982;  // unit: pixels
+            calibration_params.acc_y = 1.00531;  // unit: pixels
+
+            // Angle from Tz. This is a yaw angle.
+            calibration_params.min_angle_z = -0.869913;  // unit: pixels
+            calibration_params.max_angle_z = 0.871543;  // unit: pixels
+            calibration_params.acc_z = 0.435567;  // unit: pixels
+        """
+        return dict(
+            search_range_and_tol_diff_y=(SpecValue(2 * 13.2469, "p"), SpecValue(4.374110, "p")),
+            search_range_and_tol_comm_y=(SpecValue(0.000000000, "p"), SpecValue(4.374110, "p")),
+            search_range_and_tol_diff_x=(SpecValue(2 * 281.106, "p"), SpecValue(0.937018, "p")),
+            search_range_and_tol_diff_z=(SpecValue(2 * 75.3982, "p"), SpecValue(0.502655, "p")),
+            search_range_and_tol_comm_z=(SpecValue(75.3982 - -75.3982, "p"), SpecValue(1.00531, "p")),
+            search_range_and_tol_comm_y_golden=(SpecValue(0.871543 - -0.869913, "p"), SpecValue(0.435567, "p")),
+        )
 
     @property
     def rectified_size(self):
@@ -523,14 +589,14 @@ class InitialCalibration:
     def calibrate(
         self,
         initial_stereo_state: BaselineFrameStereoState,
-        search_range_and_tol_diff_y: tuple[dict[str, float], dict[str, float]] | None = None,
-        search_range_and_tol_comm_y: tuple[dict[str, float], dict[str, float]] | None = None,
-        search_range_and_tol_diff_x: tuple[dict[str, float], dict[str, float]] | None = None,
-        search_range_and_tol_diff_z: tuple[dict[str, float], dict[str, float]] | None = None,
-        search_range_and_tol_comm_z: tuple[dict[str, float], dict[str, float]] | None = None,
-        search_range_and_tol_comm_y_golden: tuple[dict[str, float], dict[str, float]] | None = None,
+        search_range_and_tol_diff_y: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(4.25, "p")),
+        search_range_and_tol_comm_y: tuple[SpecValue, SpecValue] = (SpecValue(0.0, "d"), SpecValue(4.25, "p")),
+        search_range_and_tol_diff_x: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(0.5, "p")),
+        search_range_and_tol_diff_z: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(0.5, "p")),
+        search_range_and_tol_comm_z: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(1.0, "p")),
+        search_range_and_tol_comm_y_golden: tuple[SpecValue, SpecValue] = (SpecValue(0.5, "d"), SpecValue(0.4, "p")),
         dry_run_for_spec: bool = False,
-    ) -> BaselineFrameStereoState | dict[str, tuple[float, float]]:
+    ) -> BaselineFrameStereoState | dict[str, tuple[float, ...]]:
         """Performs the initial calibration.
 
         Each dictionary in the search range and tolerance specifications should have at most one of the following keys:
@@ -544,111 +610,43 @@ class InitialCalibration:
             search_range_and_tol_diff_x: The search range and tolerance for the differential euler x angle.
             search_range_and_tol_diff_z: The search range and tolerance for the differential euler z angle.
             search_range_and_tol_comm_z: The search range and tolerance for the common euler z angle (formerly Ty).
-            search_range_and_tol_comm_y_golden: The search range and tolerance for the common euler y angle (formerly
-                Tz).
+            search_range_and_tol_comm_y_golden: The search range and tolerance of golden section search for the common
+                euler y angle (formerly Tz).
             dry_run_for_spec: If True, do not perform the calibration, just return the parsed search ranges and
                 tolerances. This is useful for testing and checking the specification parsing.
         """
-        if search_range_and_tol_diff_y is None:
-            search_range_and_tol_diff_y = ({"angle": 6.0}, {"pixel": 4.25})
-        if search_range_and_tol_comm_y is None:
-            search_range_and_tol_comm_y = ({"angle": 0.0}, {"pixel": 4.25})
-        if search_range_and_tol_diff_x is None:
-            search_range_and_tol_diff_x = ({"angle": 6.0}, {"pixel": 0.5})
-        if search_range_and_tol_diff_z is None:
-            search_range_and_tol_diff_z = ({"angle": 6.0}, {"pixel": 0.5})
-        if search_range_and_tol_comm_z is None:
-            search_range_and_tol_comm_z = ({"angle": 6.0}, {"pixel": 1.0})
-        if search_range_and_tol_comm_y_golden is None:
-            search_range_and_tol_comm_y_golden = ({"angle": 0.5}, {"pixel": 0.4})
-
-        def parse_spec(spec: dict[str, float], angle: str) -> float:
-            """Parses a specification dictionary and returns the value in degrees."""
-            if "angle" in spec:
-                if "pixel" in spec:
-                    raise ValueError(f"Spec cannot have both 'angle' and 'pixel' keys: {spec}")
-                return spec["angle"]
-            elif "pixel" in spec:
-                convert: Callable[[float], float] = {
-                    "x": self.pixel_to_euler_x, "y": self.pixel_to_euler_y, "z": self.pixel_to_euler_z
-                }[angle]
-                return convert(spec["pixel"])
+        def to_angle(spec: specs.SpecValue, angle_name: str) -> float:
+            """Parses a specification and returns the value in degrees."""
+            if spec.unit == "d":
+                return spec.value
+            elif spec.unit == "p":
+                if angle_name == "x":
+                    return self.pixel_to_euler_x(spec.value)
+                elif angle_name == "y":
+                    return self.pixel_to_euler_y(spec.value)
+                elif angle_name == "z":
+                    return self.pixel_to_euler_z(spec.value)
+                else:
+                    raise ValueError(f"Invalid angle name '{angle_name}'")
             else:
-                raise ValueError(f"Spec must have either 'angle' or 'pixel' key: {spec}")
+                raise ValueError(f"Spec unit must have either 'd' or 'p' key, got '{spec.unit}'")
 
         # convert the search ranges and tolerances to degrees.
-        search_range_diff_y, tol_diff_y = [parse_spec(s, "y") for s in search_range_and_tol_diff_y]
-        search_range_comm_y, tol_comm_y = [parse_spec(s, "y") for s in search_range_and_tol_comm_y]
-        search_range_diff_x, tol_diff_x = [parse_spec(s, "x") for s in search_range_and_tol_diff_x]
-        search_range_diff_z, tol_diff_z = [parse_spec(s, "z") for s in search_range_and_tol_diff_z]
-        search_range_comm_z, tol_comm_z = [parse_spec(s, "z") for s in search_range_and_tol_comm_z]
-        search_range_comm_y_golden, tol_comm_y_golden = [parse_spec(s, "y") for s in search_range_and_tol_comm_y_golden]
         specs_dict = dict(
-            search_range_and_tol_diff_y_degrees=(search_range_diff_y, tol_diff_y),
-            search_range_and_tol_comm_y_degrees=(search_range_comm_y, tol_comm_y),
-            search_range_and_tol_diff_x_degrees=(search_range_diff_x, tol_diff_x),
-            search_range_and_tol_diff_z_degrees=(search_range_diff_z, tol_diff_z),
-            search_range_and_tol_comm_z_degrees=(search_range_comm_z, tol_comm_z),
-            search_range_and_tol_comm_y_golden_degrees=(search_range_comm_y_golden, tol_comm_y_golden),
+            search_range_and_tol_diff_y_degrees=tuple(to_angle(s, "y") for s in search_range_and_tol_diff_y),
+            search_range_and_tol_comm_y_degrees=tuple(to_angle(s, "y") for s in search_range_and_tol_comm_y),
+            search_range_and_tol_diff_x_degrees=tuple(to_angle(s, "x") for s in search_range_and_tol_diff_x),
+            search_range_and_tol_diff_z_degrees=tuple(to_angle(s, "z") for s in search_range_and_tol_diff_z),
+            search_range_and_tol_comm_z_degrees=tuple(to_angle(s, "z") for s in search_range_and_tol_comm_z),
+            search_range_and_tol_comm_y_golden_degrees=tuple(
+                to_angle(s, "y") for s in search_range_and_tol_comm_y_golden
+            ),
         )
         if dry_run_for_spec:
             logger.info("Dry run for spec parsing. Returning without performing calibration.")
             self._display_search_spec(**specs_dict)
             return specs_dict
 
-        return self.calibrate_with_angle_spec(initial_stereo_state=initial_stereo_state, **specs_dict)
-
-    def calibrate_with_pixel_spec(
-        self,
-        initial_stereo_state: BaselineFrameStereoState,
-        search_range_and_tol_diff_y_pixels: tuple[float, float] = (25.5, 4.25),
-        search_range_and_tol_comm_y_pixels: tuple[float, float] = (0.0, 4.25),
-        search_range_and_tol_diff_x_pixels: tuple[float, float] = (560.0, 0.5),
-        search_range_and_tol_diff_z_pixels: tuple[float, float] = (150.0, 0.5),
-        search_range_and_tol_comm_z_pixels: tuple[float, float] = (150.0, 1.0),
-        search_range_and_tol_comm_y_golden_pixels: tuple[float, float] = (1.6, 0.4),
-        dry_run_for_spec: bool = False,
-    ) -> BaselineFrameStereoState | dict[str, tuple[float, float]]:
-        """Performs the initial calibration.
-
-        Args:
-            initial_stereo_state: The initial stereo state which will be used as a pre-condition.
-            search_range_and_tol_diff_y_pixels: The search range and tolerance for the differential euler y angle,
-                in pixels. This is equivalent to the old terminology (2 * vib_y, tol_y).
-            search_range_and_tol_comm_y_pixels: The search range and tolerance for the common euler y angle (formerly
-                Tz), in degrees. This is used in the grid search of euler-y in addition to the differential euler y.
-            search_range_and_tol_diff_x_pixels: The search range and tolerance for the differential euler x angle,
-                in pixels. This is equivalent to the old terminology (2 * vib_x, tol_x).
-            search_range_and_tol_diff_z_pixels: The search range and tolerance for the differential euler z angle,
-                in pixels. This is equivalent to the old terminology (2 * vib_z, tol_z).
-            search_range_and_tol_comm_z_pixels: The search range and tolerance for the common euler z angle (formerly
-                Ty), in pixels. This is equivalent to the old terminology (max_angle_y - min_angle_y, acc_y).
-            search_range_and_tol_comm_y_golden_pixels: The search range and tolerance for the common euler y angle
-                (formerly Tz), in pixels. This is equivalent to the old terminology (max_angle_z - min_angle_z, acc_z).
-            dry_run_for_spec: If True, do not perform the calibration, just return the parsed search ranges and
-                tolerances. This is useful for testing and checking the specification parsing.
-        """
-        # convert the search ranges and tolerances to degrees.
-        search_range_diff_y, tol_diff_y = [self.pixel_to_euler_y(p) for p in search_range_and_tol_diff_y_pixels]
-        search_range_comm_y, tol_comm_y = [self.pixel_to_euler_y(p) for p in search_range_and_tol_comm_y_pixels]
-        search_range_diff_x, tol_diff_x = [self.pixel_to_euler_x(p) for p in search_range_and_tol_diff_x_pixels]
-        search_range_diff_z, tol_diff_z = [self.pixel_to_euler_z(p) for p in search_range_and_tol_diff_z_pixels]
-        search_range_comm_z, tol_comm_z = [self.pixel_to_euler_z(p) for p in search_range_and_tol_comm_z_pixels]
-        search_range_comm_y_golden, tol_comm_y_golden = [
-            self.pixel_to_euler_y(p) for p in search_range_and_tol_comm_y_golden_pixels
-        ]
-        specs_dict = dict(
-            search_range_and_tol_diff_y_degrees=(search_range_diff_y, tol_diff_y),
-            search_range_and_tol_comm_y_degrees=(search_range_comm_y, tol_comm_y),
-            search_range_and_tol_diff_x_degrees=(search_range_diff_x, tol_diff_x),
-            search_range_and_tol_diff_z_degrees=(search_range_diff_z, tol_diff_z),
-            search_range_and_tol_comm_z_degrees=(search_range_comm_z, tol_comm_z),
-            search_range_and_tol_comm_y_golden_degrees=(search_range_comm_y_golden, tol_comm_y_golden),
-        )
-        if dry_run_for_spec:
-            logger.info("Dry run for spec parsing. Returning without performing calibration.")
-            self._display_search_spec(**specs_dict)
-            return specs_dict
         return self.calibrate_with_angle_spec(initial_stereo_state=initial_stereo_state, **specs_dict)
 
     def calibrate_with_angle_spec(
@@ -824,27 +822,27 @@ class InitialCalibration:
 
     def pixel_to_euler_x(self, pixel: float) -> float:
         """Returns the euler x angle in degrees corresponding to a pixel deviation."""
-        return PixelDeviationToAngle.pixel_to_euler_x(pixel, self._rectified_focal)
+        return specs.pixel_to_euler_x(pixel, self._rectified_focal)
 
     def pixel_to_euler_y(self, pixel: float) -> float:
         """Returns the euler y angle in degrees corresponding to a pixel deviation."""
-        return PixelDeviationToAngle.pixel_to_euler_y(pixel, self._rectified_focal, self._rectified_size)
+        return specs.pixel_to_euler_y(pixel, self._rectified_focal, self._rectified_size)
 
     def pixel_to_euler_z(self, pixel: float) -> float:
         """Returns the euler z angle in degrees corresponding to a pixel deviation."""
-        return PixelDeviationToAngle.pixel_to_euler_z(pixel, self._rectified_size)
+        return specs.pixel_to_euler_z(pixel, self._rectified_size)
 
     def euler_x_to_pixel(self, angle_deg: float) -> float:
         """Returns the pixel deviation corresponding to an euler x angle in degrees."""
-        return PixelDeviationToAngle.euler_x_to_pixel(angle_deg, self._rectified_focal)
+        return specs.euler_x_to_pixel(angle_deg, self._rectified_focal)
 
     def euler_y_to_pixel(self, angle_deg: float) -> float:
         """Returns the pixel deviation corresponding to an euler y angle in degrees."""
-        return PixelDeviationToAngle.euler_y_to_pixel(angle_deg, self._rectified_focal, self._rectified_size)
+        return specs.euler_y_to_pixel(angle_deg, self._rectified_focal, self._rectified_size)
 
     def euler_z_to_pixel(self, angle_deg: float) -> float:
         """Returns the pixel deviation corresponding to an euler z angle in degrees."""
-        return PixelDeviationToAngle.euler_z_to_pixel(angle_deg, self._rectified_size)
+        return specs.euler_z_to_pixel(angle_deg, self._rectified_size)
 
     @staticmethod
     def _display_search_spec(
@@ -870,148 +868,3 @@ class InitialCalibration:
         logger.info(f"comm euler y: {search_range_comm_y_golden: 20.6f} | {tol_comm_y_golden: 18.6f} (golden section)")
 
 
-def recover_pose(
-    points_sets: list[tuple[npt.NDArray, npt.NDArray]],
-    undistorted_k: npt.NDArray,
-    undistorted_into: str = "rectilinear",
-    undistort_rotation: npt.NDArray | None = None,
-    verbose: bool = False,
-    debug: bool = True,
-    debug_name: str = "debug_recover_pose"
-) -> BaselineFrameStereoState:
-    """Recovers the relative pose between two images given matched points.
-
-    Args:
-        points_sets: A list of tuples, each containing two numpy arrays of shape (num_points, 3) representing
-            matched points in the two images in (x, y, confidence) format.
-        undistorted_k: The undistorted camera intrinsic matrix (3x3 numpy array).
-        undistorted_into: A string indicating the intrinsics model of the undistorted image. Valid values are
-            "rectilinear", "cylindrical_x", "cylindrical_y".
-        undistort_rotation: An optional rotation matrix (3x3 numpy array) applied during undistortion. The rotation
-            matrix transforms the coordinates in original camera frame coordinate to the undistorted image coordinate.
-        verbose: If True, prints verbose information during processing.
-        debug: If True, generates a debug plot showing the essential matrix inner product errors.
-        debug_name: The name to use for the debug plot file.
-    """
-    uv_image0_sets = []
-    uv_image1_sets = []
-    fx = undistorted_k[0, 0]
-    fy = undistorted_k[1, 1]
-    cx = undistorted_k[0, 2]
-    cy = undistorted_k[1, 2]
-
-    if undistorted_into == "rectilinear":
-        undistorted_k_inv = np.linalg.inv(undistorted_k)
-        for xyc0s, xyc1s in points_sets:
-            # xyc0s, xyc1s:(num_points, 3) where 3 is for (x, y, confidence)
-            # xy1_image0 and xy1_image1 will be of shape (3, num_points) where 3 is for (x, y, 1)
-            xy1_image0 = xyc0s.T.copy()
-            xy1_image0[2] = 1.0
-            uv_image0 = undistorted_k_inv[:2, :] @ xy1_image0
-            uv_image0_sets.append(uv_image0)
-
-            xy1_image1 = xyc1s.T.copy()
-            xy1_image1[2] = 1.0
-            uv_image1 = undistorted_k_inv[:2, :] @ xy1_image1
-            uv_image1_sets.append(uv_image1)
-    elif undistorted_into == "cylindrical_x":
-        delta_azimuth_x = 1 / undistorted_k[0, 0]  # in radians
-        for xyc0s, xyc1s in points_sets:
-            # xyc0s, xyc1s:(num_points, 3) where 3 is for (x, y, confidence)
-            azimuth_x = (xyc0s[:, 0] - cx) * delta_azimuth_x
-            x = fx * np.sin(azimuth_x)
-            y = (fx / fy) * (xyc0s[:, 1] - cy)
-            z = fx * np.cos(azimuth_x)
-            uv_image0_sets.append(np.vstack((x, y, z)))
-
-            azimuth_x = xyc1s[:, 0] * delta_azimuth_x
-            x = fx * np.sin(azimuth_x)
-            y = (fx / fy) * xyc1s[:, 1]
-            z = fx * np.cos(azimuth_x)
-            uv_image1_sets.append(np.vstack((x, y, z)))
-    elif undistorted_into == "cylindrical_y":
-        delta_azimuth_y = 1 / undistorted_k[0, 0]  # in radians
-        for xyc0s, xyc1s in points_sets:
-            # xyc0s, xyc1s:(num_points, 3) where 3 is for (x, y, confidence)
-            azimuth_y = (xyc0s[:, 1] - cy) * delta_azimuth_y
-            x = (fy / fx) * (xyc0s[:, 0] - cx)
-            y = fy * np.sin(azimuth_y)
-            z = fy * np.cos(azimuth_y)
-            uv_image0_sets.append(np.vstack((x, y, z)))
-
-            azimuth_y = xyc1s[:, 1] * delta_azimuth_y
-            x = (fy / fx) * xyc1s[:, 0]
-            y = fy * np.sin(azimuth_y)
-            z = fy * np.cos(azimuth_y)
-            uv_image1_sets.append(np.vstack((x, y, z)))
-    else:
-        raise ValueError(f"Invalid undistorted_into value: {undistorted_into}")
-    uv_image0 = np.hstack(uv_image0_sets).T
-    uv_image1 = np.hstack(uv_image1_sets).T
-
-    f_original = undistorted_k[0, 0]
-    f = 1.0
-    e_mat, mask = cv.findEssentialMat(uv_image0, uv_image1, focal=f, pp=(0.0, 0.0), threshold=1 / f_original)
-    if verbose:
-        logger.info("The percentage of the point pairs used:", 100 * mask.sum() / mask.size, "%")
-
-    ret_val, rot_mat, t_vec_proper, mask2 = cv.recoverPose(
-        E=e_mat, points1=uv_image0, points2=uv_image1, focal=1.0, pp=(0.0, 0.0), mask=mask
-    )
-    state = BaselineFrameStereoState.from_opencv_r_t(rot_mat, t_vec_proper.ravel())
-    if verbose:
-        logger.info("Horizontal bar R, T:", rot_mat, t_vec_proper.ravel())
-
-    if undistort_rotation is not None:
-        # undistort_rotation transforms the coordinates in original camera frame coordinate to the undistorted image
-        # coordinate.
-        def undo_undistort_rotation(s: BaselineFrameStereoState):
-            """Updates the extrinsics that we obtained without considering the undistort rotation."""
-            r1 = s.rot_mat_1  # passive rotation, from the undistort image coordinate to the rectified.
-            r2 = s.rot_mat_2  # passive rotation, from the undistort image coordinate to the rectified.
-            # To make the r1 and r2 transforming original camera frame coordinates to the rectified, we need to apply
-            # the rotation from original camera frame to undistorted image frame from the right, making the following:
-            #     [R]_{rect <- undist} * [R]_{undist <- original}
-            r1 = r1 @ undistort_rotation
-            r2 = r2 @ undistort_rotation
-            return StateComposer(r1, r2, s.t_norm).initial_state
-        state = undo_undistort_rotation(state)
-    state.global_pitch = 0.0  # reset global pitch to zero since we do not estimate it here.
-
-    if debug:
-        def pad_all_one_row(arr):
-            all_one_row = np.ones(arr.shape[1], dtype=arr.dtype)
-            ret = np.vstack((arr, all_one_row))
-            assert ret.shape[0] == 3
-            return ret
-
-        def essential_inner_product(ess, pts_image0, pts_image1):
-            assert pts_image0.shape[0] == pts_image1.shape[0] == 2
-            assert pts_image0.ndim == pts_image1.ndim == 2
-            pts_image0 = pad_all_one_row(pts_image0)
-            pts_image1 = pad_all_one_row(pts_image1)
-
-            inner_product = [
-                (pt_img1[:, np.newaxis].T @ ess @ pt_img0[:, np.newaxis]).item()
-                for pt_img0, pt_img1 in zip(pts_image0.T, pts_image1.T)
-            ]
-            return np.array(inner_product)
-
-        error_to_show = abs(essential_inner_product(e_mat, uv_image0.T, uv_image1.T))
-
-        # Plot the error from each chunk of point matches.
-        fh = plt.figure()
-        ah = fh.add_subplot(111)
-        x_start = 0
-        idx_any_image = 0  # any of the image0 or image1
-        for chunk_size in [s[idx_any_image].shape[0] for s in points_sets]:
-            ah.plot(np.arange(x_start, x_start + chunk_size), error_to_show[x_start:x_start + chunk_size])
-            x_start += chunk_size
-        percent_essential = 100 * mask.sum() / mask.size
-        percent_recover_pose = 100 * mask2.sum() / mask2.size
-        ah.set_title(f"{percent_essential:.4f}% pairs used in essential matrix, {percent_recover_pose:.4f}% in recover pose")
-        ah.set_xlabel("pair index")
-        ah.set_ylabel("E matrix inner product error")
-        fh.savefig(f"{debug_name}.png")
-
-    return state
