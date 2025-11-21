@@ -204,6 +204,7 @@ class InitialCalibration:
             "vertical": optimize for vertical stereo, i.e., top-bottom stereo.
             "center": Using a smaller central ROI.
             "large_center": Using a larger central ROI.
+            "full": Using the full image.
         verbose: If True, print verbose information during optimization.
     """
     def __init__(
@@ -286,6 +287,9 @@ class InitialCalibration:
             self.z_roi_planners = [
                 windowed_planner_wrap(planner, col_roi_factor, row_roi_factor, 0, 0),
             ]
+        elif roi_directive == "full":
+            self.x_roi_planners = [planner]
+            self.z_roi_planners = [planner]
         else:
             raise NotImplementedError(f"roi_directive={roi_directive} is not implemented.")
         self.fom_x_roi = [FomCalculator.create(p, **fom_calc_kwargs) for p in self.x_roi_planners]
@@ -481,6 +485,9 @@ class InitialCalibration:
         elif self.roi_directive == "large_center":
             window_spec["window_w_ratio"] = 0.75
             window_spec["window_h_ratio"] = 0.75
+        elif self.roi_directive == "full":
+            window_spec["window_w_ratio"] = 1.0
+            window_spec["window_h_ratio"] = 1.0
         else:
             raise NotImplementedError(f"roi_directive={self.roi_directive} is not implemented.")
         # fom_calc in merit_helper will be set later.
