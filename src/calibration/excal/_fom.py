@@ -198,7 +198,8 @@ class InitialCalibration:
         image2: The second image in the stereo pair.
         i2: The intrinsics of the second camera.
         planner: The planner to use for rectification.
-        rectified_size: The size of the rectified images. If None, use the input image size.
+        specified_rectified_size: The size of the desired rectified images fed to the planner.plan(). If None, use the
+            input image size. The actual rectified image size will be determined by the planner.
         roi_directive: A string specifying the ROIs when calculating FOM. Valid values are:
             "horizontal": optimize for horizontal stereo, i.e., left-right stereo.
             "vertical": optimize for vertical stereo, i.e., top-bottom stereo.
@@ -214,7 +215,7 @@ class InitialCalibration:
         image2: npt.NDArray[np.uint8],
         i2: IntrinsicsBase,
         planner: pyhammer.cpyhammer.AbstractPlanner,
-        rectified_size: tuple[int, int] | None = None,
+        specified_rectified_size: tuple[int, int] | None = None,
         roi_directive: str = "horizontal",
         verbose: bool = False,
     ):
@@ -226,12 +227,13 @@ class InitialCalibration:
         self.i2 = i2
         self.planner = planner
         input_size = image1.shape[:2][::-1]
-        if rectified_size is None:
-            rectified_size = input_size
-        self._rectified_size: tuple[int, int] = rectified_size
+        if specified_rectified_size is None:
+            specified_rectified_size = input_size
+        self._specified_rectified_size = specified_rectified_size
         dummy_state = BaselineFrameStereoState(*([0.0] * 6), t_norm=1.0)
-        temp_plan = planner.plan(i1, i2, input_size, dummy_state, rectified_size)
+        temp_plan = planner.plan(i1, i2, input_size, dummy_state, specified_rectified_size)
         self._rectified_focal: float = temp_plan.intrinsic1.fx
+        self._rectified_size: tuple[int, int] = temp_plan.output_size
 
         # TODO: border is only used when an ROI is specified!
         self.match_border = pyhammer.cpyhammer.FomRoiBorderDirective()
@@ -241,7 +243,7 @@ class InitialCalibration:
         fom_calc_kwargs = dict(
             border=self.match_border,
             fom_weight_method=1,
-            initial_rectified_size=self._rectified_size,
+            initial_rectified_size=specified_rectified_size,
             matcher_id=1,
         )
 
@@ -470,7 +472,7 @@ class InitialCalibration:
         fom_calc_kwargs = dict(
             border=self.match_border,
             fom_weight_method=1,
-            initial_rectified_size=self._rectified_size,
+            initial_rectified_size=self._specified_rectified_size,
             matcher_id=2,
         )
         if self.roi_directive == "horizontal":
