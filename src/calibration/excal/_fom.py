@@ -206,7 +206,9 @@ class InitialCalibration:
             "center": Using a smaller central ROI.
             "large_center": Using a larger central ROI.
             "full": Using the full image.
+        use_fom_weight: If True, use FOM weight when calculating FOM.
         verbose: If True, print verbose information during optimization.
+        debug_dir: If provided, the directory to save debug information.
     """
     def __init__(
         self,
@@ -217,10 +219,14 @@ class InitialCalibration:
         planner: pyhammer.cpyhammer.AbstractPlanner,
         specified_rectified_size: tuple[int, int] | None = None,
         roi_directive: str = "horizontal",
+        use_fom_weight: bool = False,
         verbose: bool = False,
+        debug_dir: str | Path | None = None,
     ):
         self.verbose = verbose
         self._debug_dir = None
+        self.debug_dir = debug_dir
+        self._fom_weight_method = (1 if use_fom_weight else 0)
         self.image1_gpu = pyhammer.gpu_mat(image1)
         self.image2_gpu = pyhammer.gpu_mat(image2)
         self.i1 = i1
@@ -242,7 +248,7 @@ class InitialCalibration:
 
         fom_calc_kwargs = dict(
             border=self.match_border,
-            fom_weight_method=1,
+            fom_weight_method=self._fom_weight_method,
             initial_rectified_size=specified_rectified_size,
             matcher_id=1,
         )
@@ -471,7 +477,7 @@ class InitialCalibration:
         window_spec = dict(window_center_x_offset_ratio=0.0, window_center_y_offset_ratio=0.0)
         fom_calc_kwargs = dict(
             border=self.match_border,
-            fom_weight_method=1,
+            fom_weight_method=self._fom_weight_method,
             initial_rectified_size=self._specified_rectified_size,
             matcher_id=2,
         )
