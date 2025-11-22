@@ -149,8 +149,8 @@ class GoldenSectionEulerAngleOptimizer:
         self.i1 = i1
         self.i2 = i2
         assert angle_axis in ("x", "y", "z")
-        self.angle_axis = angle_axis
-        self.common_angle = common_angle
+        self.angle_axis: str = angle_axis
+        self.common_angle: bool = common_angle
         if common_angle:
             assert angle_axis != "x", "Common rotation around x axis does not change the extrinsics."
         self.fom_calc = [fom_calc] if not isinstance(fom_calc, list) else fom_calc
