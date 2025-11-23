@@ -25,6 +25,24 @@ from calibration.excal.specs import SpecValue
 
 logger = logging.getLogger(__name__)
 __all__ = ["StateComposer", "InitialCalibration"]
+GRID_EVAL_OUTPUT_TYPE = list[tuple[float, tuple[float, float]]]
+
+
+def get_search_grid(search_range: float, search_step: float, mid_point: float = 0.0) -> list[float]:
+    """Returns a sequence of points to search."""
+    quotient = search_range / search_step
+    num = math.ceil(search_range / search_step)
+    # Avoid a precision issue and also don't increate the search range too much.
+    if num - quotient > 0.99:
+        # likely there is a floating point accuracy issue
+        num -= 1
+    # Make the number odd.
+    if num % 2 == 0:
+        num += 1
+    # Integer division
+    half_num = num // 2
+
+    return [mid_point + i * search_step for i in range(-half_num, half_num + 1)]
 
 
 class StateComposer:
@@ -89,20 +107,8 @@ class StateComposer:
         return pyhammer.trinsics.baseline_frame_stereo_state_from_two_rotations(new_rot1, new_rot2, self.baseline)
 
 
-class XZSearchHelper:
-    """A class that helps compute FOM values from euler x and z angles.
-
-    It is responsible for forming the state from the angles and wrapping the basic FOM calculation so that the input is
-    the two angles.
-
-    fom_calc must be provided before calling f().
-    """
-    def __init__(self, image1, i1, image2, i2, fom_calc: FomCalculator | None, base_state: BaselineFrameStereoState):
-        self.image1_gpu = pyhammer.gpu_mat(image1)
-        self.i1 = i1
-        self.image2_gpu = pyhammer.gpu_mat(image2)
-        self.i2 = i2
-        self.fom_calc = fom_calc
+class XZStateComposer:
+    def __init__(self, base_state: BaselineFrameStereoState):
         self.state_composer = StateComposer.from_state(base_state)
 
     def state_from_angles(self, euler_x_deg: float, euler_z_deg: float) -> BaselineFrameStereoState:
@@ -111,10 +117,223 @@ class XZSearchHelper:
         state = composer.compose_euler_differential("z", euler_z_deg)
         return state
 
-    def f(self, euler_x_deg: float, euler_z_deg: float) -> float:
-        state = self.state_from_angles(euler_x_deg, euler_z_deg)
-        fom = self.fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, state)
-        return fom
+
+class MultiscaleGridSearchXZOptimizer:
+    """A class that performs 2D grid search to optimize euler x and z angles.
+
+    This is derived from the GridSearchOptimizer class in the old codebase.
+
+    Args:
+        image1: The first image in the stereo pair.
+        i1: The intrinsics of the first camera.
+        image2: The second image in the stereo pair.
+        i2: The intrinsics of the second camera.
+        planner: The planner to use for rectification.
+        specified_rectified_size: The size of the desired rectified images fed to the planner.plan(). If None, use the
+            input image size. The actual rectified image size will be determined by the planner.
+        total_search_disparity:  The total number of disparities to search over.
+        match_border: The border directive when calculating FOM. If None, use strict padding.
+        roi_directive: A string specifying the ROIs when calculating FOM. Valid values are:
+            "horizontal": optimize for horizontal stereo, i.e., left-right stereo.
+            "vertical": optimize for vertical stereo, i.e., top-bottom stereo.
+            "center": Using a smaller central ROI.
+            "large_center": Using a larger central ROI.
+            "full": Using the full image.
+        fom_weight_method:  An option to select which weight method to use. 0: no weighting, 1: weight by solid angle.
+            This is passed to FomCalculator so look up the documentation in C++ there for details.
+        verbose: If True, print verbose information during optimization.
+    """
+    def __init__(
+        self,
+        image1: npt.NDArray[np.uint8] | pyhammer.cpyhammer.cv_GpuMat,
+        i1: IntrinsicsBase,
+        image2: npt.NDArray[np.uint8],
+        i2: IntrinsicsBase,
+        planner: pyhammer.cpyhammer.AbstractPlanner,
+        specified_rectified_size: tuple[int, int] | None = None,
+        total_search_disparity: int = 256,
+        match_border: pyhammer.cpyhammer.FomRoiBorderDirective | None = None,
+        roi_directive: str = "horizontal",
+        fom_weight_method: int = 0,
+        verbose: bool = False,
+    ):
+        # The arguments in the initializer sets up the search landscape.
+        self.image1_gpu = pyhammer.gpu_mat(image1)
+        self.image2_gpu = pyhammer.gpu_mat(image2)
+        self.i1 = i1
+        self.i2 = i2
+        self.planner = planner
+        self.specified_rectified_size = specified_rectified_size
+        self.total_search_disparity = total_search_disparity
+        if match_border is not None:
+            self.match_border = match_border
+        else:
+            self.match_border = pyhammer.cpyhammer.FomRoiBorderDirective()
+            self.match_border.strict_padding = True
+        self.roi_directive = roi_directive
+        self.fom_weight_method = fom_weight_method
+        self.verbose = verbose
+
+        self._state_composer: XZStateComposer | None = None
+        self._grid_search_best_state: tuple[float, float] | None = None
+        self._grid_search_evaluations: GRID_EVAL_OUTPUT_TYPE | None = None
+
+    def _reset_search_result(self) -> None:
+        self._grid_search_best_state = (0.0, 0.0)
+        self._grid_search_evaluations = []
+
+    def _update_search_result(
+        self,
+        descending_grid_evals: GRID_EVAL_OUTPUT_TYPE,
+        reference_score_func: Callable[[float, float], float],
+    ) -> None:
+        best_grid_state: tuple[float, float]
+        _, best_grid_state = descending_grid_evals[0]  # descending order
+        best_prev_grid_state: tuple[float, float] = self._grid_search_best_state
+        if best_grid_state == best_prev_grid_state:
+            # Always update to the latest given grid if the best states are the same.
+            self._grid_search_best_state = best_grid_state
+            self._grid_search_evaluations = descending_grid_evals
+        else:
+            # Use the current-scale FoM calculator to evaluate the states to decide which to use as the base.
+            fom_from_grid = reference_score_func(*best_grid_state)
+            fom_from_prev_best = reference_score_func(*best_prev_grid_state)
+            if fom_from_grid >= fom_from_prev_best:  # The = sign is important. Update to the new grid when equal.
+                self._grid_search_best_state = best_grid_state
+                self._grid_search_evaluations = descending_grid_evals
+
+    def last_sorted_grid_evaluations(self) -> GRID_EVAL_OUTPUT_TYPE:
+        """Returns the last accepted grid evaluations.
+
+        If the best result at a scale is not accepted, it means that the angles does not yield a better figure-of-merit
+        according to a reference FoM calculation. The grid evaluation at this scale is then discarded. This function
+        will only return the last accepted grid evaluations.
+        """
+        if self._grid_search_evaluations is None:
+            return []
+        return self._grid_search_evaluations
+
+    def optimize(
+        self,
+        init_state: BaselineFrameStereoState | StateComposer,
+        search_range_x_deg: float,
+        search_step_x_deg: float,
+        search_range_z_deg: float,
+        search_step_z_deg: float,
+    ) -> tuple[BaselineFrameStereoState, tuple[float, float]]:
+        """Returns the optimized state and the corresponding FOM value."""
+        window_spec = dict(window_center_x_offset_ratio=0.0, window_center_y_offset_ratio=0.0)
+        fom_calc_kwargs = dict(
+            border=self.match_border,
+            fom_weight_method=self.fom_weight_method,
+            initial_rectified_size=self.specified_rectified_size,
+            matcher_id=2,
+        )
+        if self.roi_directive == "horizontal":
+            window_spec["window_w_ratio"] = 1.0
+            window_spec["window_h_ratio"] = 0.5
+        elif self.roi_directive == "vertical":
+            window_spec["window_w_ratio"] = 0.5
+            window_spec["window_h_ratio"] = 1.0
+        elif self.roi_directive == "center":
+            window_spec["window_w_ratio"] = 0.5
+            window_spec["window_h_ratio"] = 0.5
+        elif self.roi_directive == "large_center":
+            window_spec["window_w_ratio"] = 0.75
+            window_spec["window_h_ratio"] = 0.75
+        elif self.roi_directive == "full":
+            window_spec["window_w_ratio"] = 1.0
+            window_spec["window_h_ratio"] = 1.0
+        else:
+            raise NotImplementedError(f"roi_directive={self.roi_directive} is not implemented.")
+        # fom_calc in merit_helper will be set later.
+        # merit_helper = XZSearchHelper(
+        #     self.image1_gpu, self.i1, self.image2_gpu, self.i2, fom_calc=None, base_state=base_state
+        # )
+        self._state_composer = XZStateComposer(init_state)
+        self._reset_search_result()
+
+        # Performs the multiscale grid search.
+        # In old codebase:
+        #     _grid_search(x0, 4*delta_x, 4*delta_z,      vib_x,      vib_z, 3, self_max_disparity/4)
+        #     _grid_search(x0, 2*delta_x, 2*delta_z,  delta_x*4,  delta_z*4, 2, self_max_disparity/4)
+        #     _grid_search(x0,   delta_x,   delta_z, delta_x(!), delta_z(!), 1, self_max_disparity/2)  # see note (!)
+        # note(herbert): The ranges in the last iteration in the following codes differ from the old code. I believe
+        #                it is a bug in the old codebase. A `vib` of just 1*delta_x in the old codebase, which has an
+        #                equivalent range of 2*delta_x, is too small to cover the segment spanned by a center point and
+        #                its two neighbors.
+        args = [
+            (3, self.total_search_disparity // 4, 4 * search_step_x_deg, 4 * search_step_z_deg),
+            (2, self.total_search_disparity // 4, 2 * search_step_x_deg, 2 * search_step_z_deg),
+            (1, self.total_search_disparity // 2, 1 * search_step_x_deg, 1 * search_step_z_deg),
+        ]
+        x_range = search_range_x_deg
+        z_range = search_range_z_deg
+        grid_evaluations: GRID_EVAL_OUTPUT_TYPE = []
+        for pyramid, search_disp, x_step, z_step in args:
+            if self.verbose:
+                logger.info(f"Searching Euler XZ grid for pyramid {pyramid}")
+            # Set up the merit function.
+            curr_scale_planner = windowed_planner_wrap(
+                self.planner, **window_spec, post_windowing_scale=1 / 2 ** pyramid
+            )
+            curr_scale_fom_calc = FomCalculator.create(
+                curr_scale_planner, **fom_calc_kwargs, matcher_num_disparities=search_disp,
+            )
+            def merit_func(x_deg: float, z_deg: float) -> float:
+                s = self._state_composer.state_from_angles(x_deg, z_deg)
+                return curr_scale_fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, s)
+
+            if grid_evaluations:
+                self._update_search_result(grid_evaluations, reference_score_func=merit_func)
+            # Perform the grid search.
+            center = self._grid_search_best_state
+            x_grid = get_search_grid(x_range, x_step, center[0])
+            z_grid = get_search_grid(z_range, z_step, center[1])
+            grid_evaluations = self.eval_grid2d(merit_func, x_grid, z_grid, verbose=self.verbose)
+            grid_evaluations.sort(key=lambda x: x[0], reverse=True)
+            # Update the search range for next scale.
+            x_range = 2 * x_step
+            z_range = 2 * z_step
+            del curr_scale_planner, curr_scale_fom_calc, merit_func
+
+        # Final update and return.
+        fom_calc = FomCalculator.create(
+            self.planner, **fom_calc_kwargs, matcher_num_disparities=self.total_search_disparity,
+        )
+
+        def merit_func(x_deg: float, z_deg: float) -> float:
+            s = self._state_composer.state_from_angles(x_deg, z_deg)
+            return fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, s)
+
+        self._update_search_result(grid_evaluations, merit_func)
+        best_angles = self._grid_search_best_state
+        return self._state_composer.state_from_angles(*best_angles), best_angles
+
+    @staticmethod
+    def eval_grid2d(
+        func: Callable[[float, float], float], grid_0: Sequence[float], grid_1: Sequence[float], verbose: bool = False
+    ) -> GRID_EVAL_OUTPUT_TYPE:
+        """Performs a 2D grid evaluation.
+
+        Args:
+            func: The function to evaluate. It should take two float arguments and return a float.
+            grid_0: The first grid of values to search.
+            grid_1: The second grid of values to search.
+            verbose: If True, display a progress bar.
+
+        Returns:
+            A list of tuples, each containing the function value and the corresponding (x, y) pair.
+        """
+        enumeration = itertools.product(grid_0, grid_1)
+        if verbose:
+            total = len(grid_0) * len(grid_1)
+            enumeration = tqdm.tqdm(enumeration, total=total)
+        ret = []
+        for x, y in enumeration:
+            val = func(x, y)
+            ret.append((val, (x, y)))
+        return ret
 
 
 class GoldenSectionEulerAngleOptimizer:
@@ -392,48 +611,6 @@ class InitialCalibration:
         self._debug_dir = p
 
     @staticmethod
-    def get_search_grid(search_range: float, search_step: float, mid_point: float = 0.0) -> list[float]:
-        """Returns a sequence of points to search."""
-        quotient = search_range / search_step
-        num = math.ceil(search_range / search_step)
-        # Avoid a precision issue and also don't increate the search range too much.
-        if num - quotient > 0.99:
-            # likely there is a floating point accuracy issue
-            num -= 1
-        # Make the number odd.
-        if num % 2 == 0:
-            num += 1
-        # Integer division
-        half_num = num // 2
-
-        return [mid_point + i * search_step for i in range(-half_num, half_num + 1)]
-
-    @staticmethod
-    def eval_grid2d(
-        func: Callable[[float, float], float], grid_0: Sequence[float], grid_1: Sequence[float], verbose: bool = False
-    ) -> list[tuple[float, tuple[float, float]]]:
-        """Performs a 2D grid evaluation.
-
-        Args:
-            func: The function to evaluate. It should take two float arguments and return a float.
-            grid_0: The first grid of values to search.
-            grid_1: The second grid of values to search.
-            verbose: If True, display a progress bar.
-
-        Returns:
-            A list of tuples, each containing the function value and the corresponding (x, y) pair.
-        """
-        enumeration = itertools.product(grid_0, grid_1)
-        if verbose:
-            total = len(grid_0) * len(grid_1)
-            enumeration = tqdm.tqdm(enumeration, total=total)
-        ret = []
-        for x, y in enumeration:
-            val = func(x, y)
-            ret.append((val, (x, y)))
-        return ret
-
-    @staticmethod
     def double_triangle_area(p0: tuple[float, float], p1: tuple[float, float], p2: tuple[float, float]) -> float:
         """Returns twice the signed area of triangle (p0, p1, p2).
 
@@ -473,103 +650,43 @@ class InitialCalibration:
         Returns:
             The best stereo state found during the search.
         """
-        # Set up the function and output handling (update_best_state) for the grid search stage.
-        window_spec = dict(window_center_x_offset_ratio=0.0, window_center_y_offset_ratio=0.0)
-        fom_calc_kwargs = dict(
+        optimizer = MultiscaleGridSearchXZOptimizer(
+            self.image1_gpu,
+            self.i1,
+            self.image2_gpu,
+            self.i2,
+            self.planner,
+            self._specified_rectified_size,
+            total_search_disparity=total_search_disparity,
+            match_border=self.match_border,
+            roi_directive=self.roi_directive,
+            fom_weight_method=self._fom_weight_method,
+            verbose=self.verbose,
+        )
+        best_state_, best_state_angles = optimizer.optimize(
+            base_state,
+            search_range_x_deg,
+            search_step_x_deg,
+            search_range_z_deg,
+            search_step_z_deg,
+        )
+
+        # Prepare computation object and the initial state for the next stage of the search.
+        state_composer = XZStateComposer(base_state)
+        fom_calc = FomCalculator.create(
+            rectification_planner=self.planner,
             border=self.match_border,
             fom_weight_method=self._fom_weight_method,
             initial_rectified_size=self._specified_rectified_size,
-            matcher_id=2,
+            matcher_id=1,
         )
-        if self.roi_directive == "horizontal":
-            window_spec["window_w_ratio"] = 1.0
-            window_spec["window_h_ratio"] = 0.5
-        elif self.roi_directive == "vertical":
-            window_spec["window_w_ratio"] = 0.5
-            window_spec["window_h_ratio"] = 1.0
-        elif self.roi_directive == "center":
-            window_spec["window_w_ratio"] = 0.5
-            window_spec["window_h_ratio"] = 0.5
-        elif self.roi_directive == "large_center":
-            window_spec["window_w_ratio"] = 0.75
-            window_spec["window_h_ratio"] = 0.75
-        elif self.roi_directive == "full":
-            window_spec["window_w_ratio"] = 1.0
-            window_spec["window_h_ratio"] = 1.0
-        else:
-            raise NotImplementedError(f"roi_directive={self.roi_directive} is not implemented.")
-        # fom_calc in merit_helper will be set later.
-        merit_helper = XZSearchHelper(
-            self.image1_gpu, self.i1, self.image2_gpu, self.i2, fom_calc=None, base_state=base_state
-        )
-        evaluation_list_type = list[tuple[float, tuple[float, float]]]
-        grid_search_stage_result = {
-            "best_state": (0.0, 0.0),
-            "grid_evals": [],  # the grid evaluation list which best_state is from
-        }
-        def update_best_state(descending_grid_evals: evaluation_list_type, merit_f_helper: XZSearchHelper) -> None:
-            best_grid_state: tuple[float, float]
-            _, best_grid_state = descending_grid_evals[0]  # descending order
-            if best_grid_state == grid_search_stage_result["best_state"]:
-                # Always update to the latest given grid if the best states are the same.
-                grid_search_stage_result["best_state"] = best_grid_state
-                grid_search_stage_result["grid_evals"] = descending_grid_evals
-            else:
-                # Use the current-scale FoM calculator to evaluate the states to decide which to use as the base.
-                fom_from_grid = merit_f_helper.f(*best_grid_state)
-                fom_from_prev_best = merit_f_helper.f(*grid_search_stage_result["best_state"])
-                if fom_from_grid >= fom_from_prev_best:  # The = sign is important. Update to the new grid when equal.
-                    grid_search_stage_result["best_state"] = best_grid_state
-                    grid_search_stage_result["grid_evals"] = descending_grid_evals
-
-        # Performs the multiscale grid search.
-        # In old codebase:
-        #     _grid_search(x0, 4*delta_x, 4*delta_z,      vib_x,      vib_z, 3, self_max_disparity/4)
-        #     _grid_search(x0, 2*delta_x, 2*delta_z,  delta_x*4,  delta_z*4, 2, self_max_disparity/4)
-        #     _grid_search(x0,   delta_x,   delta_z, delta_x(!), delta_z(!), 1, self_max_disparity/2)  # see note (!)
-        args = [
-            (3, total_search_disparity // 4, 4 * search_step_x_deg, 4 * search_step_z_deg),
-            (2, total_search_disparity // 4, 2 * search_step_x_deg, 2 * search_step_z_deg),
-            (1, total_search_disparity // 2, 1 * search_step_x_deg, 1 * search_step_z_deg),
-        ]
-        x_range = search_range_x_deg
-        z_range = search_range_z_deg
-        grid_evals: evaluation_list_type = []
-        for pyramid, search_disp, x_step, z_step in args:
-            if self.verbose:
-                logger.info(f"Searching Euler XZ grid for pyramid {pyramid}")
-            # Set up the merit function.
-            curr_scale_planner = windowed_planner_wrap(self.planner, **window_spec, post_windowing_scale=1 / 2**pyramid)
-            merit_helper.fom_calc = FomCalculator.create(
-                curr_scale_planner, **fom_calc_kwargs, matcher_num_disparities=search_disp,
-            )
-            if grid_evals:
-                update_best_state(grid_evals, merit_helper)
-            # Perform the grid search.
-            center = grid_search_stage_result["best_state"]
-            x_grid = self.get_search_grid(x_range, x_step, center[0])
-            z_grid = self.get_search_grid(z_range, z_step, center[1])
-            grid_evals = self.eval_grid2d(merit_helper.f, x_grid, z_grid, verbose=self.verbose)
-            grid_evals.sort(key=lambda x: x[0], reverse=True)
-
-            # note(herbert): The ranges in the last iteration differs from the old code. I believe there is a bug in
-            #                the old codebase. A `vib` of just 1*delta_x in the old codebase, which has an equivalent
-            #                range of 2*delta_x, is too small to cover the segment spanned by a center point and its
-            #                two neighbors.
-            # This note is referred in codes above. (!)
-            x_range = 2 * x_step
-            z_range = 2 * z_step
-
-        # Prepare computation object and the initial state for the next stage of the search.
-        merit_helper.fom_calc = FomCalculator.create(
-            self.planner, **fom_calc_kwargs, matcher_num_disparities=total_search_disparity
-        )
-        update_best_state(grid_evals, merit_helper)
-        del grid_evals
+        def merit_func(x_deg: float, z_deg: float) -> float:
+            s = state_composer.state_from_angles(x_deg, z_deg)
+            return fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, s)
 
         # Build a simplex for N-M algorithm
         initial_simplex: list[tuple[float, float]] = []
-        if merit_helper.f(0.0, 0.0) > merit_helper.f(*grid_search_stage_result["best_state"]):
+        if merit_func(0.0, 0.0) > merit_func(*best_state_angles):
             # The initial state is already the best.
             if self.verbose:
                 logger.info("Create simplex from the initial state instead of the grid search result.")
@@ -580,12 +697,13 @@ class InitialCalibration:
             # The grid search estimate is better than the initial base state.
             if self.verbose:
                 logger.info("Create simplex from the grid search result.")
+            grid_evaluations = optimizer.last_sorted_grid_evaluations()
             simplex_tol = search_step_x_deg * search_step_z_deg / 65
-            _, p0 = grid_search_stage_result["grid_evals"][0]
-            _, p1 = grid_search_stage_result["grid_evals"][1]
+            _, p0 = grid_evaluations[0]
+            _, p1 = grid_evaluations[1]
             p2 = None
             # Find the first point that is not collinear with p0 and p1, starting from the points with large FoM.
-            for _, point in grid_search_stage_result["grid_evals"][2:]:
+            for _, point in grid_evaluations[2:]:
                 if 0.5 * abs(self.double_triangle_area(p0, p1, point)) > simplex_tol:
                     p2 = point
                     break
@@ -596,10 +714,10 @@ class InitialCalibration:
             initial_simplex.append((0.5 * (p0[0] + p2[0]), 0.5 * (p0[1] + p2[1])))
 
         # Nelder-Mead algorithm
-        f_nm = lambda p: -merit_helper.f(p[0], p[1])
+        f_nm = lambda p: -merit_func(p[0], p[1])
         nm_result = optimiz.nelder_mead(f_nm, initial_simplex=initial_simplex, max_iter=2)
         best_angles = nm_result["x"]
-        return merit_helper.state_from_angles(*best_angles)
+        return state_composer.state_from_angles(*best_angles)
 
     def calibrate(
         self,
@@ -787,14 +905,14 @@ class InitialCalibration:
                 # subtracting the two end points to avoid duplication (2 * tol of current round).
                 (2 * tol_0 - 2 * tol_1, tol_1),
             ]
-        diff_y_grid_to_search = self.get_search_grid(search_range_diff_y, tol_diff_y)
+        diff_y_grid_to_search = get_search_grid(search_range_diff_y, tol_diff_y)
 
         # Search the common and differential euler y angles.
         y_search_result: list[tuple[float, BaselineFrameStereoState, float, float]] = []
         best_comm_y = 0.0  # will be updated in the loop below.
         for idx_try_comm_y, (search_range, tol) in enumerate(comm_y_grid_spec):
             # Expand around the best state found in the previous round.
-            comm_y_grid_to_search = self.get_search_grid(search_range, tol, mid_point=best_comm_y)
+            comm_y_grid_to_search = get_search_grid(search_range, tol, mid_point=best_comm_y)
             if idx_try_comm_y != 0:
                 # Skip the best point of previous round because we already searched it.
                 comm_y_grid_to_search = [y for y in comm_y_grid_to_search if y != best_comm_y]
@@ -881,5 +999,3 @@ class InitialCalibration:
         logger.info(f"diff euler z: {search_range_diff_z: 20.6f} | {tol_diff_z: 18.6f}")
         logger.info(f"comm euler z: {search_range_comm_z: 20.6f} | {tol_comm_z: 18.6f}")
         logger.info(f"comm euler y: {search_range_comm_y_golden: 20.6f} | {tol_comm_y_golden: 18.6f} (golden section)")
-
-
