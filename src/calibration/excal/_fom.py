@@ -663,26 +663,15 @@ class InitialCalibration:
             fom_weight_method=self._fom_weight_method,
             verbose=self.verbose,
         )
-        best_state_, best_state_angles = optimizer.optimize(
-            base_state,
-            search_range_x_deg,
-            search_step_x_deg,
-            search_range_z_deg,
-            search_step_z_deg,
+        _, best_state_angles = optimizer.optimize(
+            base_state, search_range_x_deg, search_step_x_deg, search_range_z_deg, search_step_z_deg,
         )
 
         # Prepare computation object and the initial state for the next stage of the search.
         state_composer = XZStateComposer(base_state)
-        fom_calc = FomCalculator.create(
-            rectification_planner=self.planner,
-            border=self.match_border,
-            fom_weight_method=self._fom_weight_method,
-            initial_rectified_size=self._specified_rectified_size,
-            matcher_id=1,
-        )
         def merit_func(x_deg: float, z_deg: float) -> float:
             s = state_composer.state_from_angles(x_deg, z_deg)
-            return fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, s)
+            return self.fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, s)
 
         # Build a simplex for N-M algorithm
         initial_simplex: list[tuple[float, float]] = []
