@@ -675,18 +675,11 @@ class InitialCalibration:
 
         # Build a simplex for N-M algorithm
         initial_simplex: list[tuple[float, float]] = []
-        if merit_func(0.0, 0.0) > merit_func(*best_state_angles):
-            # The initial state is already the best.
-            if self.verbose:
-                logger.info("Create simplex from the initial state instead of the grid search result.")
-            initial_simplex.append((0.0, 0.0))
-            initial_simplex.append((0.5 * search_step_x_deg, 0.0))
-            initial_simplex.append((0.0, 0.5 * search_step_z_deg))
-        else:
+        grid_evaluations = optimizer.last_sorted_grid_evaluations()
+        if grid_evaluations and merit_func(0.0, 0.0) <= merit_func(*best_state_angles):
             # The grid search estimate is better than the initial base state.
             if self.verbose:
                 logger.info("Create simplex from the grid search result.")
-            grid_evaluations = optimizer.last_sorted_grid_evaluations()
             simplex_tol = search_step_x_deg * search_step_z_deg / 65
             _, p0 = grid_evaluations[0]
             _, p1 = grid_evaluations[1]
@@ -701,6 +694,13 @@ class InitialCalibration:
             initial_simplex.append(p0)
             initial_simplex.append((0.5 * (p0[0] + p1[0]), 0.5 * (p0[1] + p1[1])))
             initial_simplex.append((0.5 * (p0[0] + p2[0]), 0.5 * (p0[1] + p2[1])))
+        else:
+            # The initial state is already the best.
+            if self.verbose:
+                logger.info("Create simplex from the initial state instead of the grid search result.")
+            initial_simplex.append((0.0, 0.0))
+            initial_simplex.append((0.5 * search_step_x_deg, 0.0))
+            initial_simplex.append((0.0, 0.5 * search_step_z_deg))
 
         # Nelder-Mead algorithm
         f_nm = lambda p: -merit_func(p[0], p[1])
