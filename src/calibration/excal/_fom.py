@@ -154,12 +154,14 @@ class MultiscaleGridSearchXZOptimizer:
         total_search_disparity: int = 256,
         match_border: pyhammer.cpyhammer.FomRoiBorderDirective | None = None,
         roi_directive: str = "horizontal",
+        valid_mask: npt.NDArray[np.uint8] | None = None,
         fom_weight_method: int = 0,
         verbose: bool = False,
     ):
         # The arguments in the initializer sets up the search landscape.
         self.image1_gpu = pyhammer.gpu_mat(image1)
         self.image2_gpu = pyhammer.gpu_mat(image2)
+        self.valid_mask_gpu = pyhammer.gpu_mat(valid_mask) if valid_mask is not None else None
         self.i1 = i1
         self.i2 = i2
         self.planner = planner
@@ -282,7 +284,9 @@ class MultiscaleGridSearchXZOptimizer:
             )
             def merit_func(x_deg: float, z_deg: float) -> float:
                 s = self._state_composer.state_from_angles(x_deg, z_deg)
-                return curr_scale_fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, s)
+                return curr_scale_fom_calc.calculate(
+                    self.image1_gpu, self.i1, self.image2_gpu, self.i2, s, self.valid_mask_gpu
+                )
 
             if grid_evaluations:
                 self._update_search_result(grid_evaluations, reference_score_func=merit_func)
@@ -304,7 +308,7 @@ class MultiscaleGridSearchXZOptimizer:
 
         def merit_func(x_deg: float, z_deg: float) -> float:
             s = self._state_composer.state_from_angles(x_deg, z_deg)
-            return fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, s)
+            return fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, s, self.valid_mask_gpu)
 
         self._update_search_result(grid_evaluations, merit_func)
         best_angles = self._grid_search_best_state
@@ -361,6 +365,7 @@ class GoldenSectionEulerAngleOptimizer:
         angle_axis: str,
         common_angle: bool,
         fom_calc: FomCalculator | list[FomCalculator],
+        valid_mask: npt.NDArray[np.uint8] | None = None,
     ):
         # The arguments in the initializer sets up the search landscape.
         self.image1_gpu = pyhammer.gpu_mat(image1)
@@ -373,6 +378,7 @@ class GoldenSectionEulerAngleOptimizer:
         if common_angle:
             assert angle_axis != "x", "Common rotation around x axis does not change the extrinsics."
         self.fom_calc = [fom_calc] if not isinstance(fom_calc, list) else fom_calc
+        self.valid_mask_gpu = pyhammer.gpu_mat(valid_mask) if valid_mask is not None else None
 
     def optimize(
         self,
@@ -388,7 +394,12 @@ class GoldenSectionEulerAngleOptimizer:
                 s = state_composer.compose_euler_common(self.angle_axis, angle_deg)
             else:
                 s = state_composer.compose_euler_differential(self.angle_axis, angle_deg)
-            fom = sum([f.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, s) for f in self.fom_calc])
+            fom = sum(
+                [
+                    f.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, s, self.valid_mask_gpu)
+                    for f in self.fom_calc
+                ]
+            )
             fom /= len(self.fom_calc)
             return -fom
 
@@ -438,6 +449,7 @@ class InitialCalibration:
         planner: pyhammer.cpyhammer.AbstractPlanner,
         specified_rectified_size: tuple[int, int] | None = None,
         roi_directive: str = "horizontal",
+        valid_mask: npt.NDArray[np.uint8] | None = None,
         use_fom_weight: bool = False,
         verbose: bool = False,
         debug_dir: str | Path | None = None,
@@ -450,6 +462,7 @@ class InitialCalibration:
         self.image2_gpu = pyhammer.gpu_mat(image2)
         self.i1 = i1
         self.i2 = i2
+        self.valid_mask_gpu = pyhammer.gpu_mat(valid_mask) if valid_mask is not None else None
         self.planner = planner
         input_size = image1.shape[:2][::-1]
         if specified_rectified_size is None:
@@ -671,7 +684,7 @@ class InitialCalibration:
         state_composer = XZStateComposer(base_state)
         def merit_func(x_deg: float, z_deg: float) -> float:
             s = state_composer.state_from_angles(x_deg, z_deg)
-            return self.fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, s)
+            return self.fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, s, self.valid_mask_gpu)
 
         # Build a simplex for N-M algorithm
         initial_simplex: list[tuple[float, float]] = []
@@ -825,7 +838,9 @@ class InitialCalibration:
         search_range_comm_z, tol_comm_z = search_range_and_tol_comm_z_degrees
         search_range_comm_y_golden, tol_comm_y_golden = search_range_and_tol_comm_y_golden_degrees
 
-        initial_fom = self.fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, initial_stereo_state)
+        initial_fom = self.fom_calc.calculate(
+            self.image1_gpu, self.i1, self.image2_gpu, self.i2, initial_stereo_state, self.valid_mask_gpu
+        )
         if self.verbose:
             logger.info(f"initial_fom: {initial_fom}")
         if self.debug_dir is not None:
@@ -873,7 +888,9 @@ class InitialCalibration:
                 curr_state = diff_z_optimizer.optimize(curr_state, search_range_diff_z, tol_diff_z)[0]
 
                 # Evaluate the FOM for this state.
-                curr_fom = self.fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, curr_state)
+                curr_fom = self.fom_calc.calculate(
+                    self.image1_gpu, self.i1, self.image2_gpu, self.i2, curr_state, self.valid_mask_gpu
+                )
             if self.verbose:
                 logger.info(
                     f"Time for (comm_y={curr_comm_y:.4e}, diff_y={curr_diff_y:.4e}): "
@@ -934,7 +951,9 @@ class InitialCalibration:
         state = diff_x_optimizer.optimize(state, search_range_diff_x, tol_diff_x)[0]
         state = diff_z_optimizer.optimize(state, search_range_diff_z, tol_diff_z)[0]
 
-        final_fom = self.fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, state)
+        final_fom = self.fom_calc.calculate(
+            self.image1_gpu, self.i1, self.image2_gpu, self.i2, state, self.valid_mask_gpu
+        )
         if self.verbose:
             logger.info(f"initial_fom: {initial_fom}")
             logger.info(f"final_fom:   {final_fom}")
