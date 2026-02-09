@@ -36,7 +36,7 @@ def spec_value(arg1: str | tuple[float, str] | SpecValue, arg2: str | None = Non
         if isinstance(arg1, tuple):
             value, unit = arg1[0], arg1[1]
         elif isinstance(arg1, str):
-            value = unit = arg1[:-1], arg1[-1]
+            value, unit = arg1[:-1], arg1[-1]
     else:
         value = arg1
         unit = arg2
