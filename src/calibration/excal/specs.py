@@ -19,6 +19,93 @@ class SpecValue(NamedTuple):
     value: float
     unit: str
 
+    # ---------- helpers ----------
+    def _assert_same_unit(self, other: "SpecValue", op: str) -> None:
+        if self.unit != other.unit:
+            raise ValueError(
+                f"Cannot apply '{op}' to different units: {self.unit!r} and {other.unit!r}"
+            )
+
+    def _coerce_real(self, other: object, op: str) -> float:
+        if not isinstance(other, Real):
+            raise TypeError(f"Unsupported operand type(s) for {op}: 'SpecValue' and {type(other).__name__!r}")
+        return float(other)
+
+    # ---------- unary ----------
+    def __neg__(self) -> "SpecValue":
+        return SpecValue(-self.value, self.unit)
+
+    def __pos__(self) -> "SpecValue":
+        return self
+
+    def __abs__(self) -> "SpecValue":
+        return SpecValue(abs(self.value), self.unit)
+
+    # ---------- addition / subtraction ----------
+    def __add__(self, other: object) -> "SpecValue":
+        if isinstance(other, SpecValue):
+            self._assert_same_unit(other, "+")
+            return SpecValue(self.value + other.value, self.unit)
+        if isinstance(other, Real):
+            return SpecValue(self.value + float(other), self.unit)
+        return NotImplemented
+
+    def __radd__(self, other: object) -> "SpecValue":
+        return self.__add__(other)
+
+    def __sub__(self, other: object) -> "SpecValue":
+        if isinstance(other, SpecValue):
+            self._assert_same_unit(other, "-")
+            return SpecValue(self.value - other.value, self.unit)
+        if isinstance(other, Real):
+            return SpecValue(self.value - float(other), self.unit)
+        return NotImplemented
+
+    def __rsub__(self, other: object) -> "SpecValue":
+        if isinstance(other, Real):
+            return SpecValue(float(other) - self.value, self.unit)
+        if isinstance(other, SpecValue):
+            self._assert_same_unit(other, "-")
+            return SpecValue(other.value - self.value, self.unit)
+        return NotImplemented
+
+    # ---------- multiplication ----------
+    # Allow scalar multiplication only.
+    def __mul__(self, other: object) -> "SpecValue":
+        factor = self._coerce_real(other, "*")
+        return SpecValue(self.value * factor, self.unit)
+
+    def __rmul__(self, other: object) -> "SpecValue":
+        return self.__mul__(other)
+
+    # ---------- division ----------
+    # SpecValue / scalar -> SpecValue
+    # SpecValue / SpecValue (same unit) -> float ratio
+    def __truediv__(self, other: object) -> "SpecValue | float":
+        if isinstance(other, SpecValue):
+            self._assert_same_unit(other, "/")
+            if other.value == 0:
+                raise ZeroDivisionError("division by zero SpecValue")
+            return self.value / other.value
+
+        divisor = self._coerce_real(other, "/")
+        if divisor == 0:
+            raise ZeroDivisionError("division by zero")
+        return SpecValue(self.value / divisor, self.unit)
+
+    # scalar / SpecValue -> float
+    def __rtruediv__(self, other: object) -> float:
+        if not isinstance(other, SpecValue):
+            raise TypeError(f"Unsupported division with a scalar numerator and {self.__class__.__name__} denominator.")
+        self._assert_same_unit(other, "/")
+        if self.value == 0:
+            raise ZeroDivisionError("division by zero SpecValue")
+        return other.value / self.value
+
+    # Optional convenience for numeric APIs
+    def __float__(self) -> float:
+        return float(self.value)
+
 
 def spec_value(arg1: str | tuple[float, str] | SpecValue, arg2: str | None = None) -> SpecValue:
     """Creates a SpecValue instance.
