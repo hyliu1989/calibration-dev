@@ -4,6 +4,7 @@ The functions convert row deviations in pixels to euler angles and vice versa fo
 horizontal stereo, if the camera is misaligned by a small angle, a feature in the stereo rectified image will be on two
 different rows. This difference, which we called deviation, is what we want to convert to or from an euler angle.
 """
+from numbers import Real
 from typing import NamedTuple
 
 import numpy as np
