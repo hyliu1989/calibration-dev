@@ -562,7 +562,7 @@ class InitialCalibration:
             search_range_and_tol_comm_y=(SpecValue(0.000000000, "p"), SpecValue(4.374110, "p")),
             search_range_and_tol_diff_x=(SpecValue(2 * 46.8509, "p"), SpecValue(0.468509, "p")),
             search_range_and_tol_diff_z=(SpecValue(2 * 12.5664, "p"), SpecValue(0.251327, "p")),
-            search_range_and_tol_comm_z=(SpecValue(25.1327 - -25.1327, "p"), SpecValue(1.00531, "p")),
+            search_range_and_tol_comm_z_golden=(SpecValue(25.1327 - -25.1327, "p"), SpecValue(1.00531, "p")),
             search_range_and_tol_comm_y_golden=(SpecValue(0.871543 - -0.869913, "p"), SpecValue(0.435567, "p")),
         )
 
@@ -593,7 +593,7 @@ class InitialCalibration:
             search_range_and_tol_comm_y=(SpecValue(0.000000000, "p"), SpecValue(4.374110, "p")),
             search_range_and_tol_diff_x=(SpecValue(2 * 281.106, "p"), SpecValue(0.937018, "p")),
             search_range_and_tol_diff_z=(SpecValue(2 * 75.3982, "p"), SpecValue(0.502655, "p")),
-            search_range_and_tol_comm_z=(SpecValue(75.3982 - -75.3982, "p"), SpecValue(1.00531, "p")),
+            search_range_and_tol_comm_z_golden=(SpecValue(75.3982 - -75.3982, "p"), SpecValue(1.00531, "p")),
             search_range_and_tol_comm_y_golden=(SpecValue(0.871543 - -0.869913, "p"), SpecValue(0.435567, "p")),
         )
 
@@ -728,7 +728,7 @@ class InitialCalibration:
         search_range_and_tol_comm_y: tuple[SpecValue, SpecValue] = (SpecValue(0.0, "d"), SpecValue(4.25, "p")),
         search_range_and_tol_diff_x: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(0.5, "p")),
         search_range_and_tol_diff_z: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(0.5, "p")),
-        search_range_and_tol_comm_z: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(1.0, "p")),
+        search_range_and_tol_comm_z_golden: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(1.0, "p")),
         search_range_and_tol_comm_y_golden: tuple[SpecValue, SpecValue] = (SpecValue(0.5, "d"), SpecValue(0.4, "p")),
         dry_run_for_spec: bool = False,
     ) -> BaselineFrameStereoState | dict[str, tuple[float, ...]]:
@@ -744,7 +744,8 @@ class InitialCalibration:
             search_range_and_tol_comm_y: The search range and tolerance for the common euler y angle (formerly Tz).
             search_range_and_tol_diff_x: The search range and tolerance for the differential euler x angle.
             search_range_and_tol_diff_z: The search range and tolerance for the differential euler z angle.
-            search_range_and_tol_comm_z: The search range and tolerance for the common euler z angle (formerly Ty).
+            search_range_and_tol_comm_z_golden: The search range and tolerance for the common euler z angle
+                (formerly Ty).
             search_range_and_tol_comm_y_golden: The search range and tolerance of golden section search for the common
                 euler y angle (formerly Tz).
             dry_run_for_spec: If True, do not perform the calibration, just return the parsed search ranges and
@@ -772,7 +773,9 @@ class InitialCalibration:
             search_range_and_tol_comm_y_degrees=tuple(to_angle(s, "y") for s in search_range_and_tol_comm_y),
             search_range_and_tol_diff_x_degrees=tuple(to_angle(s, "x") for s in search_range_and_tol_diff_x),
             search_range_and_tol_diff_z_degrees=tuple(to_angle(s, "z") for s in search_range_and_tol_diff_z),
-            search_range_and_tol_comm_z_degrees=tuple(to_angle(s, "z") for s in search_range_and_tol_comm_z),
+            search_range_and_tol_comm_z_golden_degrees=tuple(
+                to_angle(s, "z") for s in search_range_and_tol_comm_z_golden
+            ),
             search_range_and_tol_comm_y_golden_degrees=tuple(
                 to_angle(s, "y") for s in search_range_and_tol_comm_y_golden
             ),
@@ -791,7 +794,7 @@ class InitialCalibration:
         search_range_and_tol_comm_y_degrees: tuple[float, float],
         search_range_and_tol_diff_x_degrees: tuple[float, float],
         search_range_and_tol_diff_z_degrees: tuple[float, float],
-        search_range_and_tol_comm_z_degrees: tuple[float, float],
+        search_range_and_tol_comm_z_golden_degrees: tuple[float, float],
         search_range_and_tol_comm_y_golden_degrees: tuple[float, float],
         dry_run_for_spec: bool = False,
     ):
@@ -807,8 +810,8 @@ class InitialCalibration:
                 in degrees. This is equivalent to the old terminology (2 * vib_x, tol_x).
             search_range_and_tol_diff_z_degrees: The search range and tolerance for the differential euler z angle,
                 in degrees. This is equivalent to the old terminology (2 * vib_z, tol_z).
-            search_range_and_tol_comm_z_degrees: The search range and tolerance for the common euler z angle (formerly
-                Ty), in degrees. This is equivalent to the old terminology (max_angle_y - min_angle_y, acc_y).
+            search_range_and_tol_comm_z_golden_degrees: The search range and tolerance for the common euler z angle
+                (formerly Ty), in degrees. This is equivalent to the old terminology (max_angle_y - min_angle_y, acc_y).
             search_range_and_tol_comm_y_golden_degrees: The search range and tolerance for the common euler y angle
                 (formerly Tz), in degrees. This is equivalent to the old terminology (max_angle_z - min_angle_z, acc_z).
                 This is used in the Golden section search.
@@ -820,7 +823,7 @@ class InitialCalibration:
             search_range_and_tol_comm_y_degrees=search_range_and_tol_comm_y_degrees,
             search_range_and_tol_diff_x_degrees=search_range_and_tol_diff_x_degrees,
             search_range_and_tol_diff_z_degrees=search_range_and_tol_diff_z_degrees,
-            search_range_and_tol_comm_z_degrees=search_range_and_tol_comm_z_degrees,
+            search_range_and_tol_comm_z_golden_degrees=search_range_and_tol_comm_z_golden_degrees,
             search_range_and_tol_comm_y_golden_degrees=search_range_and_tol_comm_y_golden_degrees,
         )
         if dry_run_for_spec:
@@ -835,7 +838,7 @@ class InitialCalibration:
         search_range_comm_y, tol_comm_y = search_range_and_tol_comm_y_degrees
         search_range_diff_x, tol_diff_x = search_range_and_tol_diff_x_degrees
         search_range_diff_z, tol_diff_z = search_range_and_tol_diff_z_degrees
-        search_range_comm_z, tol_comm_z = search_range_and_tol_comm_z_degrees
+        search_range_comm_z, tol_comm_z = search_range_and_tol_comm_z_golden_degrees
         search_range_comm_y_golden, tol_comm_y_golden = search_range_and_tol_comm_y_golden_degrees
 
         initial_fom = self.fom_calc.calculate(
@@ -991,14 +994,14 @@ class InitialCalibration:
         search_range_and_tol_comm_y_degrees,
         search_range_and_tol_diff_x_degrees,
         search_range_and_tol_diff_z_degrees,
-        search_range_and_tol_comm_z_degrees,
+        search_range_and_tol_comm_z_golden_degrees,
         search_range_and_tol_comm_y_golden_degrees,
     ):
         search_range_diff_y, tol_diff_y = search_range_and_tol_diff_y_degrees
         search_range_comm_y, tol_comm_y = search_range_and_tol_comm_y_degrees
         search_range_diff_x, tol_diff_x = search_range_and_tol_diff_x_degrees
         search_range_diff_z, tol_diff_z = search_range_and_tol_diff_z_degrees
-        search_range_comm_z, tol_comm_z = search_range_and_tol_comm_z_degrees
+        search_range_comm_z, tol_comm_z = search_range_and_tol_comm_z_golden_degrees
         search_range_comm_y_golden, tol_comm_y_golden = search_range_and_tol_comm_y_golden_degrees
         logger.info(f"              Search range (angle) | Search tol (angle)")
         logger.info(f"diff euler y: {search_range_diff_y: 20.6f} | {tol_diff_y: 18.6f}")
