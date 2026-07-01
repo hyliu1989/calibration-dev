@@ -224,7 +224,7 @@ class MultiscaleGridSearchXZOptimizer:
 
     def optimize(
         self,
-        init_state: BaselineFrameStereoState | StateComposer,
+        init_state: BaselineFrameStereoState,
         search_range_x_deg: float,
         search_step_x_deg: float,
         search_range_z_deg: float,
