@@ -72,40 +72,48 @@ class StateComposer:
     def from_state(cls, state: BaselineFrameStereoState) -> "StateComposer":
         return cls(state.rot_mat_1, state.rot_mat_2, baseline=state.t_norm)
 
-    @property
-    def initial_state(self) -> BaselineFrameStereoState:
+    def as_state(self) -> BaselineFrameStereoState:
+        """Returns the initial state of the composer."""
         return baseline_frame_stereo_state_from_two_rotations(self.rot1, self.rot2, self.baseline)
 
+    @property
+    def initial_state(self) -> BaselineFrameStereoState:
+        return self.as_state()
+
     def compose_euler_differential(
-        self, axis: str, differential_euler_deg: float, transform: bool = False
-    ) -> "BaselineFrameStereoState | StateComposer":
+        self, axis: str, differential_euler_deg: float
+    ) -> BaselineFrameStereoState:
         """Composes a state that is a result of differential rotation to both cameras."""
+        return self.differential(axis, differential_euler_deg).as_state()
+
+    def compose_euler_common(
+        self, axis: str, common_euler_deg: float
+    ) -> BaselineFrameStereoState:
+        """Composes a state that is a result of common rotation to both cameras.
+
+        If the axis is "x", then the result should be the same as setting a new global_pitch on top
+        of base one. That is,
+        >>> # self.compose_euler_common("x", common_euler_deg) is equivalent to
+        >>> s = self.as_state()
+        >>> s.global_pitch += common_euler_deg
+        """
+        return self.common(axis, common_euler_deg).as_state()
+
+    def differential(self, axis: str, differential_euler_deg: float) -> "StateComposer":
+        """Returns a StateComposer whose base state is the result of differential rotation."""
         assert axis in ("x", "y", "z")
         half_rot_mat = Rotation.from_euler(axis, differential_euler_deg / 2, degrees=True).as_matrix()
         new_rot1 = half_rot_mat @ self.rot1
         new_rot2 = half_rot_mat.T @ self.rot2
-        if transform:
-            return StateComposer(new_rot1, new_rot2, self.baseline)
-        return baseline_frame_stereo_state_from_two_rotations(new_rot1, new_rot2, self.baseline)
+        return StateComposer(new_rot1, new_rot2, self.baseline)
 
-    def compose_euler_common(
-        self, axis: str, common_euler_deg: float, transform: bool = False
-    ) -> "BaselineFrameStereoState | StateComposer":
-        """Composes a state that is a result of common rotation to both cameras.
-
-        If the axis is "x", then the result should be the same as setting a new global_pitch on top of base one.
-        That is,
-        compose_euler_common("x", val) is equivalent to
-        s = compose_euler_differential("x", 0)
-        s.global_pitch += val
-        """
+    def common(self, axis: str, common_euler_deg: float) -> "StateComposer":
+        """Returns a StateComposer whose base state is a result of common rotation."""
         assert axis in ("x", "y", "z")
         rot_mat = Rotation.from_euler(axis, common_euler_deg, degrees=True).as_matrix()
         new_rot1 = rot_mat @ self.rot1
         new_rot2 = rot_mat @ self.rot2
-        if transform:
-            return StateComposer(new_rot1, new_rot2, self.baseline)
-        return baseline_frame_stereo_state_from_two_rotations(new_rot1, new_rot2, self.baseline)
+        return StateComposer(new_rot1, new_rot2, self.baseline)
 
 
 class XZStateComposer:
@@ -114,9 +122,7 @@ class XZStateComposer:
 
     def state_from_angles(self, euler_x_deg: float, euler_z_deg: float) -> BaselineFrameStereoState:
         composer = self.state_composer
-        composer = composer.compose_euler_differential("x", euler_x_deg, transform=True)
-        state = composer.compose_euler_differential("z", euler_z_deg)
-        return state
+        return composer.differential("x", euler_x_deg).differential("z", euler_z_deg).as_state()
 
 
 class MultiscaleGridSearchXZOptimizer:
@@ -878,8 +884,8 @@ class InitialCalibration:
             logger.info(f"Searching for (comm_y={curr_comm_y:.4e}, diff_y={curr_diff_y:.4e}) ...")
             base_state = (
                 StateComposer.from_state(initial_stereo_state)
-                .compose_euler_common("y", curr_comm_y, transform=True)
-                .compose_euler_differential("y", curr_diff_y, transform=True)
+                .common("y", curr_comm_y)
+                .differential("y", curr_diff_y)
             ).initial_state
             with contexttimer.Timer() as curr_timer:
                 curr_state = self._search_in_euler_xz_space(
