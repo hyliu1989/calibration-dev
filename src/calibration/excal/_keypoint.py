@@ -5,7 +5,8 @@ import numpy as np
 from matplotlib import pyplot as plt
 from numpy import typing as npt
 from pyhammer.trinsics import BaselineFrameStereoState
-from pyhammer.trinsics import baseline_frame_stereo_state_from_two_rotations
+
+from calibration.angleutil import baseline_frame_stereo_state_from_two_rotations
 
 
 logger = logging.getLogger(__name__)

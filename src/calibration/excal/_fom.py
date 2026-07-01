@@ -21,6 +21,7 @@ from scipy.spatial.transform import Rotation
 import calibration.optimiz as optimiz
 import calibration.excal.specs as specs
 from calibration.excal.specs import SpecValue
+from calibration.angleutil import baseline_frame_stereo_state_from_two_rotations
 
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ class StateComposer:
 
     @property
     def initial_state(self) -> BaselineFrameStereoState:
-        return pyhammer.trinsics.baseline_frame_stereo_state_from_two_rotations(self.rot1, self.rot2, self.baseline)
+        return baseline_frame_stereo_state_from_two_rotations(self.rot1, self.rot2, self.baseline)
 
     def compose_euler_differential(
         self, axis: str, differential_euler_deg: float, transform: bool = False
@@ -85,7 +86,7 @@ class StateComposer:
         new_rot2 = half_rot_mat.T @ self.rot2
         if transform:
             return StateComposer(new_rot1, new_rot2, self.baseline)
-        return pyhammer.trinsics.baseline_frame_stereo_state_from_two_rotations(new_rot1, new_rot2, self.baseline)
+        return baseline_frame_stereo_state_from_two_rotations(new_rot1, new_rot2, self.baseline)
 
     def compose_euler_common(
         self, axis: str, common_euler_deg: float, transform: bool = False
@@ -104,7 +105,7 @@ class StateComposer:
         new_rot2 = rot_mat @ self.rot2
         if transform:
             return StateComposer(new_rot1, new_rot2, self.baseline)
-        return pyhammer.trinsics.baseline_frame_stereo_state_from_two_rotations(new_rot1, new_rot2, self.baseline)
+        return baseline_frame_stereo_state_from_two_rotations(new_rot1, new_rot2, self.baseline)
 
 
 class XZStateComposer:
