@@ -19,8 +19,8 @@ from pyhammer.trinsics import IntrinsicsBase
 from scipy.spatial.transform import Rotation
 
 import calibration.optimiz as optimiz
-import calibration.excal.specs as specs
-from calibration.excal.specs import SpecValue
+import calibration.extrcal.specs as specs
+from calibration.extrcal.specs import SpecValue
 from calibration.angleutil import baseline_frame_stereo_state_from_two_rotations
 
 

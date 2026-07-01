@@ -16,11 +16,10 @@ pip install -e .  # for subsequent updates during development without installing
 Basic example:
 
 ```python
-from calibration import excal
-
+from calibration import extrcal
 
 # The following are example codes. The actual variables need to be created.
-calibrator = excal.InitialCalibration(
+calibrator = extrcal.InitialCalibration(
     image_left,  # uint8, gray scale numpy array.
     intrinsic_left,  # pyhammer intrinsics instance.
     image_right,  # uint8, gray scale numpy array.
