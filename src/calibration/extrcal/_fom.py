@@ -3,25 +3,25 @@ import itertools
 import logging
 import math
 import pickle
-from collections.abc import Sequence, Callable
+from collections.abc import Callable
+from collections.abc import Sequence
 from pathlib import Path
 
+import calibration.extrcal.specs as specs
+import calibration.optimiz as optimiz
 import contexttimer
 import cv2 as cv
 import numpy as np
 import numpy.typing as npt
 import pyhammer
 import tqdm
+from calibration.angleutil import baseline_frame_stereo_state_from_two_rotations
+from calibration.extrcal.specs import SpecValue
 from pyhammer.cpyhammer import FomCalculator
 from pyhammer.rectification import windowed_planner_wrap
 from pyhammer.trinsics import BaselineFrameStereoState
 from pyhammer.trinsics import IntrinsicsBase
 from scipy.spatial.transform import Rotation
-
-import calibration.optimiz as optimiz
-import calibration.extrcal.specs as specs
-from calibration.extrcal.specs import SpecValue
-from calibration.angleutil import baseline_frame_stereo_state_from_two_rotations
 
 
 logger = logging.getLogger(__name__)
@@ -46,23 +46,38 @@ def get_search_grid(search_range: float, search_step: float, mid_point: float = 
     return [mid_point + i * search_step for i in range(-half_num, half_num + 1)]
 
 
+def double_triangle_area(
+    p0: tuple[float, float], p1: tuple[float, float], p2: tuple[float, float]
+) -> float:
+    """Returns twice the signed area of triangle (p0, p1, p2).
+
+    abs(value) / 2 is the actual area.
+    """
+    x0, y0 = p0
+    x1, y1 = p1
+    x2, y2 = p2
+    a = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0)
+    return a
+
+
 class StateComposer:
     """A class that handles state composition from preconditioned rotations.
 
-    The additional rotation is multiplied from the left of the preconditioned rotation matrices that perform coordinate
-    transformation from original cameras to the rectified camera. Hence, the rotation can be thought as rotating in the
-    rectified camera coordinate system and the key stone effect in the rectified images will be close to small-angle
-    rectification cases.
+    The additional rotation is multiplied from the left of the preconditioned rotation matrices that
+    perform coordinate transformation from original cameras to the rectified camera. Hence, the
+    rotation can be thought as rotating in the rectified camera coordinate system and the key stone
+    effect in the rectified images will be close to small-angle rectification cases.
 
     Args:
-        rot1: The rotation matrix of the first camera. This matrix rotates the axes of the rectified camera to the
-            original camera. Equivalently, this matrix performs a coordinate transformation from the original camera to
-            the rectified camera.
-        rot2: The rotation matrix of the second camera. This matrix rotates the axes of the rectified camera to the
-            original camera. Equivalently, this matrix performs a coordinate transformation from the original camera to
-            the rectified camera.
+        rot1: The rotation matrix of the first camera. This matrix rotates the axes of the rectified
+            camera to the original camera. Equivalently, this matrix performs a coordinate
+            transformation from the original camera to the rectified camera.
+        rot2: The rotation matrix of the second camera. This matrix rotates the axes of the
+            rectified camera to the original camera. Equivalently, this matrix performs a coordinate
+            transformation from the original camera to the rectified camera.
         baseline: The baseline length in meters.
     """
+
     def __init__(self, rot1: npt.NDArray, rot2: npt.NDArray, baseline=1.0):
         self.rot1 = rot1
         self.rot2 = rot2
@@ -86,9 +101,7 @@ class StateComposer:
         """Composes a state that is a result of differential rotation to both cameras."""
         return self.differential(axis, differential_euler_deg).as_state()
 
-    def compose_euler_common(
-        self, axis: str, common_euler_deg: float
-    ) -> BaselineFrameStereoState:
+    def compose_euler_common(self, axis: str, common_euler_deg: float) -> BaselineFrameStereoState:
         """Composes a state that is a result of common rotation to both cameras.
 
         If the axis is "x", then the result should be the same as setting a new global_pitch on top
@@ -102,7 +115,9 @@ class StateComposer:
     def differential(self, axis: str, differential_euler_deg: float) -> "StateComposer":
         """Returns a StateComposer whose base state is the result of differential rotation."""
         assert axis in ("x", "y", "z")
-        half_rot_mat = Rotation.from_euler(axis, differential_euler_deg / 2, degrees=True).as_matrix()
+        half_rot_mat = Rotation.from_euler(
+            axis, differential_euler_deg / 2, degrees=True
+        ).as_matrix()
         new_rot1 = half_rot_mat @ self.rot1
         new_rot2 = half_rot_mat.T @ self.rot2
         return StateComposer(new_rot1, new_rot2, self.baseline)
@@ -136,8 +151,9 @@ class MultiscaleGridSearchXZOptimizer:
         image2: The second image in the stereo pair.
         i2: The intrinsics of the second camera.
         planner: The planner to use for rectification.
-        specified_rectified_size: The size of the desired rectified images fed to the planner.plan(). If None, use the
-            input image size. The actual rectified image size will be determined by the planner.
+        specified_rectified_size: The size of the desired rectified images fed to planner.plan().
+            If None, use the input image size. The actual rectified image size will be determined by
+            the planner.
         total_search_disparity:  The total number of disparities to search over.
         match_border: The border directive when calculating FOM. If None, use strict padding.
         roi_directive: A string specifying the ROIs when calculating FOM. Valid values are:
@@ -146,10 +162,12 @@ class MultiscaleGridSearchXZOptimizer:
             "center": Using a smaller central ROI.
             "large_center": Using a larger central ROI.
             "full": Using the full image.
-        fom_weight_method:  An option to select which weight method to use. 0: no weighting, 1: weight by solid angle.
-            This is passed to FomCalculator so look up the documentation in C++ there for details.
+        fom_weight_method:  An option to select which weight method to use. 0: no weighting,
+            1: weight by solid angle. This is passed to FomCalculator so look up the documentation
+            in C++ there for details.
         verbose: If True, print verbose information during optimization.
     """
+
     def __init__(
         self,
         image1: npt.NDArray[np.uint8] | pyhammer.cpyhammer.cv_GpuMat,
@@ -204,19 +222,21 @@ class MultiscaleGridSearchXZOptimizer:
             self._grid_search_best_state = best_grid_state
             self._grid_search_evaluations = descending_grid_evals
         else:
-            # Use the current-scale FoM calculator to evaluate the states to decide which to use as the base.
+            # Use the current-scale FoM calculator to evaluate the states for new base.
             fom_from_grid = reference_score_func(*best_grid_state)
             fom_from_prev_best = reference_score_func(*best_prev_grid_state)
-            if fom_from_grid >= fom_from_prev_best:  # The = sign is important. Update to the new grid when equal.
+
+            # The equal sign (=) here is important. Update to the new grid when equal.
+            if fom_from_grid >= fom_from_prev_best:
                 self._grid_search_best_state = best_grid_state
                 self._grid_search_evaluations = descending_grid_evals
 
     def last_sorted_grid_evaluations(self) -> GRID_EVAL_OUTPUT_TYPE:
         """Returns the last accepted grid evaluations.
 
-        If the best result at a scale is not accepted, it means that the angles does not yield a better figure-of-merit
-        according to a reference FoM calculation. The grid evaluation at this scale is then discarded. This function
-        will only return the last accepted grid evaluations.
+        If the best result at a scale is not accepted, it means that the angles does not yield a
+        better figure-of-merit according to a reference FoM calculation. The grid evaluation at this
+        scale is then discarded. This function will only return the last accepted grid evaluations.
         """
         if self._grid_search_evaluations is None:
             return []
@@ -257,20 +277,21 @@ class MultiscaleGridSearchXZOptimizer:
             raise NotImplementedError(f"roi_directive={self.roi_directive} is not implemented.")
         # fom_calc in merit_helper will be set later.
         # merit_helper = XZSearchHelper(
-        #     self.image1_gpu, self.i1, self.image2_gpu, self.i2, fom_calc=None, base_state=base_state
+        #   self.image1_gpu, self.i1, self.image2_gpu, self.i2, fom_calc=None, base_state=base_state
         # )
         self._state_composer = XZStateComposer(init_state)
         self._reset_search_result()
 
         # Performs the multiscale grid search.
         # In old codebase:
-        #     _grid_search(x0, 4*delta_x, 4*delta_z,      vib_x,      vib_z, 3, self_max_disparity/4)
-        #     _grid_search(x0, 2*delta_x, 2*delta_z,  delta_x*4,  delta_z*4, 2, self_max_disparity/4)
-        #     _grid_search(x0,   delta_x,   delta_z, delta_x(!), delta_z(!), 1, self_max_disparity/2)  # see note (!)
-        # note(herbert): The ranges in the last iteration in the following codes differ from the old code. I believe
-        #                it is a bug in the old codebase. A `vib` of just 1*delta_x in the old codebase, which has an
-        #                equivalent range of 2*delta_x, is too small to cover the segment spanned by a center point and
-        #                its two neighbors.
+        #     _grid_search(x0, 4*delta_x, 4*delta_z,     vib_x,      vib_z, 3, self_max_disparity/4)
+        #     _grid_search(x0, 2*delta_x, 2*delta_z, delta_x*4,  delta_z*4, 2, self_max_disparity/4)
+        #     _grid_search(x0,   delta_x,   delta_z,delta_x(!), delta_z(!), 1, self_max_disparity/2)
+        #                                                  see following notes for (!)
+        # note(herbert): The ranges in the last iteration in the following codes differ from the old
+        #                code. I believe it is a bug in the old codebase. A `vib` of just 1*delta_x
+        #                in the old codebase, which has an equivalent range of 2*delta_x, is too
+        #                small to cover the segment spanned by a center point and its two neighbors.
         args = [
             (3, self.total_search_disparity // 4, 4 * search_step_x_deg, 4 * search_step_z_deg),
             (2, self.total_search_disparity // 4, 2 * search_step_x_deg, 2 * search_step_z_deg),
@@ -284,12 +305,16 @@ class MultiscaleGridSearchXZOptimizer:
                 logger.info(f"Searching Euler XZ grid for pyramid {pyramid}")
             # Set up the merit function.
             curr_scale_planner = windowed_planner_wrap(
-                self.planner, **window_spec, post_windowing_scale=1 / 2 ** pyramid
+                self.planner, **window_spec, post_windowing_scale=1 / 2**pyramid
             )
             curr_scale_fom_calc = FomCalculator.create(
-                curr_scale_planner, **fom_calc_kwargs, matcher_num_disparities=search_disp,
+                curr_scale_planner,
+                **fom_calc_kwargs,
+                matcher_num_disparities=search_disp,
             )
+
             def merit_func(x_deg: float, z_deg: float) -> float:
+                nonlocal curr_scale_fom_calc
                 s = self._state_composer.state_from_angles(x_deg, z_deg)
                 return curr_scale_fom_calc.calculate(
                     self.image1_gpu, self.i1, self.image2_gpu, self.i2, s, self.valid_mask_gpu
@@ -310,12 +335,16 @@ class MultiscaleGridSearchXZOptimizer:
 
         # Final update and return.
         fom_calc = FomCalculator.create(
-            self.planner, **fom_calc_kwargs, matcher_num_disparities=self.total_search_disparity,
+            self.planner,
+            **fom_calc_kwargs,
+            matcher_num_disparities=self.total_search_disparity,
         )
 
         def merit_func(x_deg: float, z_deg: float) -> float:
             s = self._state_composer.state_from_angles(x_deg, z_deg)
-            return fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, s, self.valid_mask_gpu)
+            return fom_calc.calculate(
+                self.image1_gpu, self.i1, self.image2_gpu, self.i2, s, self.valid_mask_gpu
+            )
 
         self._update_search_result(grid_evaluations, merit_func)
         best_angles = self._grid_search_best_state
@@ -323,7 +352,10 @@ class MultiscaleGridSearchXZOptimizer:
 
     @staticmethod
     def eval_grid2d(
-        func: Callable[[float, float], float], grid_0: Sequence[float], grid_1: Sequence[float], verbose: bool = False
+        func: Callable[[float, float], float],
+        grid_0: Sequence[float],
+        grid_1: Sequence[float],
+        verbose: bool = False,
     ) -> GRID_EVAL_OUTPUT_TYPE:
         """Performs a 2D grid evaluation.
 
@@ -358,11 +390,12 @@ class GoldenSectionEulerAngleOptimizer:
         image2: The second image in the stereo pair.
         i2: The intrinsics of the second camera.
         angle_axis: The axis of the euler angle to optimize. Must be one of "x", "y", or "z".
-        common_angle: If True, optimize a common angle for both cameras. If False, optimize a differential angle.
-            Note that if common_angle is True, angle_axis cannot be "x", since a common rotation around the x-axis does
-            not change the extrinsics.
+        common_angle: If True, optimize a common angle for both cameras. If False, optimize a
+            differential angle. Note that if common_angle is True, angle_axis cannot be "x", since
+            a common rotation around the x-axis does not change the extrinsics.
         fom_calc: The FOM calculator to use.
     """
+
     def __init__(
         self,
         image1: npt.NDArray[np.uint8] | pyhammer.cpyhammer.cv_GpuMat,
@@ -383,7 +416,9 @@ class GoldenSectionEulerAngleOptimizer:
         self.angle_axis: str = angle_axis
         self.common_angle: bool = common_angle
         if common_angle:
-            assert angle_axis != "x", "Common rotation around x axis does not change the extrinsics."
+            assert (
+                angle_axis != "x"
+            ), "Common rotation around x axis does not change the extrinsics."
         self.fom_calc = [fom_calc] if not isinstance(fom_calc, list) else fom_calc
         self.valid_mask_gpu = pyhammer.gpu_mat(valid_mask) if valid_mask is not None else None
 
@@ -394,7 +429,9 @@ class GoldenSectionEulerAngleOptimizer:
         search_tol_deg: float,
     ) -> tuple[BaselineFrameStereoState, float]:
         """Returns the optimized state and the corresponding FOM value."""
-        state_composer = state if isinstance(state, StateComposer) else StateComposer.from_state(state)
+        state_composer = (
+            state if isinstance(state, StateComposer) else StateComposer.from_state(state)
+        )
 
         def merit_function(angle_deg):
             if self.common_angle:
@@ -403,7 +440,9 @@ class GoldenSectionEulerAngleOptimizer:
                 s = state_composer.compose_euler_differential(self.angle_axis, angle_deg)
             fom = sum(
                 [
-                    f.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, s, self.valid_mask_gpu)
+                    f.calculate(
+                        self.image1_gpu, self.i1, self.image2_gpu, self.i2, s, self.valid_mask_gpu
+                    )
                     for f in self.fom_calc
                 ]
             )
@@ -412,7 +451,8 @@ class GoldenSectionEulerAngleOptimizer:
 
         optimizer = optimiz.GoldenSectionSearch(merit_function, tol=search_tol_deg)
 
-        # make the search range large enough to cover at least 0.5 * search_range_deg around initial point.
+        # make the search range large enough to cover at least 0.5 * search_range_deg around initial
+        # point.
         new_search_range = search_range_deg * 0.5 / optimizer.G2
         x, f_x = optimizer.search_with_range(new_search_range, init_a=0.0)
         if self.common_angle:
@@ -435,8 +475,9 @@ class InitialCalibration:
         image2: The second image in the stereo pair.
         i2: The intrinsics of the second camera.
         planner: The planner to use for rectification.
-        specified_rectified_size: The size of the desired rectified images fed to the planner.plan(). If None, use the
-            input image size. The actual rectified image size will be determined by the planner.
+        specified_rectified_size: The size of the desired rectified images fed to planner.plan().
+            If None, use the input image size. The actual rectified image size will be determined by
+            the planner.
         roi_directive: A string specifying the ROIs when calculating FOM. Valid values are:
             "horizontal": optimize for horizontal stereo, i.e., left-right stereo.
             "vertical": optimize for vertical stereo, i.e., top-bottom stereo.
@@ -447,6 +488,7 @@ class InitialCalibration:
         verbose: If True, print verbose information during optimization.
         debug_dir: If provided, the directory to save debug information.
     """
+
     def __init__(
         self,
         image1: npt.NDArray[np.uint8],
@@ -464,7 +506,7 @@ class InitialCalibration:
         self.verbose = verbose
         self._debug_dir = None
         self.debug_dir = debug_dir
-        self._fom_weight_method = (1 if use_fom_weight else 0)
+        self._fom_weight_method = 1 if use_fom_weight else 0
         self.image1_gpu = pyhammer.gpu_mat(image1)
         self.image2_gpu = pyhammer.gpu_mat(image2)
         self.i1 = i1
@@ -514,7 +556,7 @@ class InitialCalibration:
             ]
             self.z_roi_planners = [
                 windowed_planner_wrap(planner, col_roi_factor, row_roi_factor, 0, row_roi_factor),
-                windowed_planner_wrap(planner, col_roi_factor, row_roi_factor, 0, -row_roi_factor)
+                windowed_planner_wrap(planner, col_roi_factor, row_roi_factor, 0, -row_roi_factor),
             ]
         elif roi_directive == "center":
             row_roi_factor = 1 / 2
@@ -569,8 +611,14 @@ class InitialCalibration:
             search_range_and_tol_comm_y=(SpecValue(0.000000000, "p"), SpecValue(4.374110, "p")),
             search_range_and_tol_diff_x=(SpecValue(2 * 46.8509, "p"), SpecValue(0.468509, "p")),
             search_range_and_tol_diff_z=(SpecValue(2 * 12.5664, "p"), SpecValue(0.251327, "p")),
-            search_range_and_tol_comm_z_golden=(SpecValue(25.1327 - -25.1327, "p"), SpecValue(1.00531, "p")),
-            search_range_and_tol_comm_y_golden=(SpecValue(0.871543 - -0.869913, "p"), SpecValue(0.435567, "p")),
+            search_range_and_tol_comm_z_golden=(
+                SpecValue(25.1327 - -25.1327, "p"),
+                SpecValue(1.00531, "p"),
+            ),
+            search_range_and_tol_comm_y_golden=(
+                SpecValue(0.871543 - -0.869913, "p"),
+                SpecValue(0.435567, "p"),
+            ),
         )
 
     @staticmethod
@@ -600,15 +648,22 @@ class InitialCalibration:
             search_range_and_tol_comm_y=(SpecValue(0.000000000, "p"), SpecValue(4.374110, "p")),
             search_range_and_tol_diff_x=(SpecValue(2 * 281.106, "p"), SpecValue(0.937018, "p")),
             search_range_and_tol_diff_z=(SpecValue(2 * 75.3982, "p"), SpecValue(0.502655, "p")),
-            search_range_and_tol_comm_z_golden=(SpecValue(75.3982 - -75.3982, "p"), SpecValue(1.00531, "p")),
-            search_range_and_tol_comm_y_golden=(SpecValue(0.871543 - -0.869913, "p"), SpecValue(0.435567, "p")),
+            search_range_and_tol_comm_z_golden=(
+                SpecValue(75.3982 - -75.3982, "p"),
+                SpecValue(1.00531, "p"),
+            ),
+            search_range_and_tol_comm_y_golden=(
+                SpecValue(0.871543 - -0.869913, "p"),
+                SpecValue(0.435567, "p"),
+            ),
         )
 
     @property
     def rectified_size(self):
         """Returns read-only rectified image size.
 
-        If you want to change this, please create a new InitialCalibration object and specify it at initializer.
+        If you want to change this, please create a new InitialCalibration object and specify it at
+        initializer.
         """
         return self._rectified_size
 
@@ -630,18 +685,6 @@ class InitialCalibration:
         p.mkdir(parents=True, exist_ok=True)
         self._debug_dir = p
 
-    @staticmethod
-    def double_triangle_area(p0: tuple[float, float], p1: tuple[float, float], p2: tuple[float, float]) -> float:
-        """Returns twice the signed area of triangle (p0, p1, p2).
-
-        abs(value) / 2 is the actual area.
-        """
-        x0, y0 = p0
-        x1, y1 = p1
-        x2, y2 = p2
-        a = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0)
-        return a
-
     def _search_in_euler_xz_space(
         self,
         base_state: BaselineFrameStereoState,
@@ -653,19 +696,20 @@ class InitialCalibration:
     ) -> BaselineFrameStereoState:
         """Performs the search of XZ space under a given input base state.
 
-        This is derived from _run_nm_quick_optimize() in the FomCalibration class in the old codebase. The usage is to
-        set the euler y angles of the base state and then pass it to this function for a deep XZ search.
+        This is derived from _run_nm_quick_optimize() in the FomCalibration class in the old
+        codebase. The usage is to set the euler y angles of the base state and then pass it to this
+        function for a deep XZ search.
 
         Args:
             base_state: The base state to expand the search space around.
-            search_range_x_deg: The full range of Euler_x to search, in degrees. Note that comparing to old terminology,
-                search_range_x_deg = 2 * vib_x.
-            search_range_z_deg: The full range of Euler_z to search, in degrees. Note that comparing to old terminology,
-                search_range_z_deg = 2 * vib_z.
-            search_step_x_deg: The step size of Euler_x to search, in degrees. This is equivalent to the old terminology
-                delta_x.
-            search_step_z_deg: The step size of Euler_z to search, in degrees. This is equivalent to the old terminology
-                delta_z.
+            search_range_x_deg: The full range of Euler_x to search, in degrees. Note that comparing
+                to old terminology, search_range_x_deg = 2 * vib_x.
+            search_range_z_deg: The full range of Euler_z to search, in degrees. Note that comparing
+                to old terminology, search_range_z_deg = 2 * vib_z.
+            search_step_x_deg: The step size of Euler_x to search, in degrees. This is equivalent to
+                the old terminology delta_x.
+            search_step_z_deg: The step size of Euler_z to search, in degrees. This is equivalent to
+                the old terminology delta_z.
 
         Returns:
             The best stereo state found during the search.
@@ -684,14 +728,21 @@ class InitialCalibration:
             verbose=self.verbose,
         )
         _, best_state_angles = optimizer.optimize(
-            base_state, search_range_x_deg, search_step_x_deg, search_range_z_deg, search_step_z_deg,
+            base_state,
+            search_range_x_deg,
+            search_step_x_deg,
+            search_range_z_deg,
+            search_step_z_deg,
         )
 
         # Prepare computation object and the initial state for the next stage of the search.
         state_composer = XZStateComposer(base_state)
+
         def merit_func(x_deg: float, z_deg: float) -> float:
             s = state_composer.state_from_angles(x_deg, z_deg)
-            return self.fom_calc.calculate(self.image1_gpu, self.i1, self.image2_gpu, self.i2, s, self.valid_mask_gpu)
+            return self.fom_calc.calculate(
+                self.image1_gpu, self.i1, self.image2_gpu, self.i2, s, self.valid_mask_gpu
+            )
 
         # Build a simplex for N-M algorithm
         initial_simplex: list[tuple[float, float]] = []
@@ -704,9 +755,10 @@ class InitialCalibration:
             _, p0 = grid_evaluations[0]
             _, p1 = grid_evaluations[1]
             p2 = None
-            # Find the first point that is not collinear with p0 and p1, starting from the points with large FoM.
+            # Find the first point that is not collinear with p0 and p1.
+            # Starting from the points with large FoM.
             for _, point in grid_evaluations[2:]:
-                if 0.5 * abs(self.double_triangle_area(p0, p1, point)) > simplex_tol:
+                if 0.5 * abs(double_triangle_area(p0, p1, point)) > simplex_tol:
                     p2 = point
                     break
             assert p2 is not None
@@ -717,13 +769,17 @@ class InitialCalibration:
         else:
             # The initial state is already the best.
             if self.verbose:
-                logger.info("Create simplex from the initial state instead of the grid search result.")
+                logger.info(
+                    "Create simplex from the initial state instead of the grid search result."
+                )
             initial_simplex.append((0.0, 0.0))
             initial_simplex.append((0.5 * search_step_x_deg, 0.0))
             initial_simplex.append((0.0, 0.5 * search_step_z_deg))
 
         # Nelder-Mead algorithm
-        f_nm = lambda p: -merit_func(p[0], p[1])
+        def f_nm(p):
+            return -merit_func(p[0], p[1])
+
         nm_result = optimiz.nelder_mead(f_nm, initial_simplex=initial_simplex, max_iter=2)
         best_angles = nm_result["x"]
         return state_composer.state_from_angles(*best_angles)
@@ -731,33 +787,58 @@ class InitialCalibration:
     def calibrate(
         self,
         initial_stereo_state: BaselineFrameStereoState,
-        search_range_and_tol_diff_y: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(4.25, "p")),
-        search_range_and_tol_comm_y: tuple[SpecValue, SpecValue] = (SpecValue(0.0, "d"), SpecValue(4.25, "p")),
-        search_range_and_tol_diff_x: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(0.5, "p")),
-        search_range_and_tol_diff_z: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(0.5, "p")),
-        search_range_and_tol_comm_z_golden: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(1.0, "p")),
-        search_range_and_tol_comm_y_golden: tuple[SpecValue, SpecValue] = (SpecValue(0.5, "d"), SpecValue(0.4, "p")),
+        search_range_and_tol_diff_y: tuple[SpecValue, SpecValue] = (
+            SpecValue(6.0, "d"),
+            SpecValue(4.25, "p"),
+        ),
+        search_range_and_tol_comm_y: tuple[SpecValue, SpecValue] = (
+            SpecValue(0.0, "d"),
+            SpecValue(4.25, "p"),
+        ),
+        search_range_and_tol_diff_x: tuple[SpecValue, SpecValue] = (
+            SpecValue(6.0, "d"),
+            SpecValue(0.5, "p"),
+        ),
+        search_range_and_tol_diff_z: tuple[SpecValue, SpecValue] = (
+            SpecValue(6.0, "d"),
+            SpecValue(0.5, "p"),
+        ),
+        search_range_and_tol_comm_z_golden: tuple[SpecValue, SpecValue] = (
+            SpecValue(6.0, "d"),
+            SpecValue(1.0, "p"),
+        ),
+        search_range_and_tol_comm_y_golden: tuple[SpecValue, SpecValue] = (
+            SpecValue(0.5, "d"),
+            SpecValue(0.4, "p"),
+        ),
         dry_run_for_spec: bool = False,
     ) -> BaselineFrameStereoState | dict[str, tuple[float, ...]]:
         """Performs the initial calibration.
 
-        Each dictionary in the search range and tolerance specifications should have at most one of the following keys:
+        Each dictionary in the search range and tolerance specifications should have at most one of
+        the following keys:
             - "angle": The value of the search range or tolerance in degrees.
             - "pixel": The value of the search range or tolerance in pixels.
 
         Args:
             initial_stereo_state: The initial stereo state which will be used as a pre-condition.
-            search_range_and_tol_diff_y: The search range and tolerance for the differential euler y angle.
-            search_range_and_tol_comm_y: The search range and tolerance for the common euler y angle (formerly Tz).
-            search_range_and_tol_diff_x: The search range and tolerance for the differential euler x angle.
-            search_range_and_tol_diff_z: The search range and tolerance for the differential euler z angle.
-            search_range_and_tol_comm_z_golden: The search range and tolerance for the common euler z angle
-                (formerly Ty).
-            search_range_and_tol_comm_y_golden: The search range and tolerance of golden section search for the common
-                euler y angle (formerly Tz).
-            dry_run_for_spec: If True, do not perform the calibration, just return the parsed search ranges and
-                tolerances. This is useful for testing and checking the specification parsing.
+            search_range_and_tol_diff_y: The search range and tolerance for the
+                differential euler y angle.
+            search_range_and_tol_comm_y: The search range and tolerance for the
+                common euler y angle (formerly Tz).
+            search_range_and_tol_diff_x: The search range and tolerance for the
+                differential euler x angle.
+            search_range_and_tol_diff_z: The search range and tolerance for the
+                differential euler z angle.
+            search_range_and_tol_comm_z_golden: The search range and tolerance for the
+                common euler z angle (formerly Ty).
+            search_range_and_tol_comm_y_golden: The search range and tolerance of golden section
+                search for the common euler y angle (formerly Tz).
+            dry_run_for_spec: If True, do not perform the calibration, just return the parsed search
+                ranges and tolerances. This is useful for testing and checking the specification
+                parsing.
         """
+
         def to_angle(spec: specs.SpecValue, angle_name: str) -> float:
             """Parses a specification and returns the value in degrees."""
             if spec.unit == "d":
@@ -776,10 +857,18 @@ class InitialCalibration:
 
         # convert the search ranges and tolerances to degrees.
         specs_dict = dict(
-            search_range_and_tol_diff_y_degrees=tuple(to_angle(s, "y") for s in search_range_and_tol_diff_y),
-            search_range_and_tol_comm_y_degrees=tuple(to_angle(s, "y") for s in search_range_and_tol_comm_y),
-            search_range_and_tol_diff_x_degrees=tuple(to_angle(s, "x") for s in search_range_and_tol_diff_x),
-            search_range_and_tol_diff_z_degrees=tuple(to_angle(s, "z") for s in search_range_and_tol_diff_z),
+            search_range_and_tol_diff_y_degrees=tuple(
+                to_angle(s, "y") for s in search_range_and_tol_diff_y
+            ),
+            search_range_and_tol_comm_y_degrees=tuple(
+                to_angle(s, "y") for s in search_range_and_tol_comm_y
+            ),
+            search_range_and_tol_diff_x_degrees=tuple(
+                to_angle(s, "x") for s in search_range_and_tol_diff_x
+            ),
+            search_range_and_tol_diff_z_degrees=tuple(
+                to_angle(s, "z") for s in search_range_and_tol_diff_z
+            ),
             search_range_and_tol_comm_z_golden_degrees=tuple(
                 to_angle(s, "z") for s in search_range_and_tol_comm_z_golden
             ),
@@ -792,9 +881,11 @@ class InitialCalibration:
             self._display_search_spec(**specs_dict)
             return specs_dict
 
-        return self.calibrate_with_angle_spec(initial_stereo_state=initial_stereo_state, **specs_dict)
+        return self.calibrate_with_angle_spec(
+            initial_stereo_state=initial_stereo_state, **specs_dict
+        )
 
-    def calibrate_with_angle_spec(
+    def calibrate_with_angle_spec(  # noqa: C901
         self,
         initial_stereo_state: BaselineFrameStereoState,
         search_range_and_tol_diff_y_degrees: tuple[float, float],
@@ -809,21 +900,28 @@ class InitialCalibration:
 
         Args:
             initial_stereo_state: The initial stereo state which will be used as a pre-condition.
-            search_range_and_tol_diff_y_degrees: The search range and tolerance for the differential euler y angle,
-                in degrees. This is equivalent to the old terminology (2 * vib_y, tol_y).
-            search_range_and_tol_comm_y_degrees: The search range and tolerance for the common euler y angle (formerly
-                Tz), in degrees. This is used in the grid search of euler-y in addition to the differential euler y.
-            search_range_and_tol_diff_x_degrees: The search range and tolerance for the differential euler x angle,
-                in degrees. This is equivalent to the old terminology (2 * vib_x, tol_x).
-            search_range_and_tol_diff_z_degrees: The search range and tolerance for the differential euler z angle,
-                in degrees. This is equivalent to the old terminology (2 * vib_z, tol_z).
-            search_range_and_tol_comm_z_golden_degrees: The search range and tolerance for the common euler z angle
-                (formerly Ty), in degrees. This is equivalent to the old terminology (max_angle_y - min_angle_y, acc_y).
-            search_range_and_tol_comm_y_golden_degrees: The search range and tolerance for the common euler y angle
-                (formerly Tz), in degrees. This is equivalent to the old terminology (max_angle_z - min_angle_z, acc_z).
-                This is used in the Golden section search.
-            dry_run_for_spec: If True, do not perform the calibration, just return the parsed search ranges and
-                tolerances. This is useful for testing and checking the specification parsing.
+            search_range_and_tol_diff_y_degrees: The search range and tolerance for the
+                differential euler y angle, in degrees. This is equivalent to the old terminology
+                (2 * vib_y, tol_y).
+            search_range_and_tol_comm_y_degrees: The search range and tolerance for the
+                common euler y angle (formerly Tz), in degrees. This is used in the grid search of
+                euler-y in addition to the differential euler y.
+            search_range_and_tol_diff_x_degrees: The search range and tolerance for the
+                differential euler x angle, in degrees. This is equivalent to the old terminology
+                (2 * vib_x, tol_x).
+            search_range_and_tol_diff_z_degrees: The search range and tolerance for the
+                differential euler z angle, in degrees. This is equivalent to the old terminology
+                (2 * vib_z, tol_z).
+            search_range_and_tol_comm_z_golden_degrees: The search range and tolerance for the
+                common euler z angle (formerly Ty), in degrees. This is equivalent to the old
+                terminology (max_angle_y - min_angle_y, acc_y).
+            search_range_and_tol_comm_y_golden_degrees: The search range and tolerance for the
+                common euler y angle (formerly Tz), in degrees. This is equivalent to the old
+                terminology (max_angle_z - min_angle_z, acc_z). This is used in the Golden section
+                search.
+            dry_run_for_spec: If True, do not perform the calibration, just return the parsed search
+                ranges and tolerances. This is useful for testing and checking the specification
+                parsing.
         """
         specs_dict = dict(
             search_range_and_tol_diff_y_degrees=search_range_and_tol_diff_y_degrees,
@@ -849,14 +947,23 @@ class InitialCalibration:
         search_range_comm_y_golden, tol_comm_y_golden = search_range_and_tol_comm_y_golden_degrees
 
         initial_fom = self.fom_calc.calculate(
-            self.image1_gpu, self.i1, self.image2_gpu, self.i2, initial_stereo_state, self.valid_mask_gpu
+            self.image1_gpu,
+            self.i1,
+            self.image2_gpu,
+            self.i2,
+            initial_stereo_state,
+            self.valid_mask_gpu,
         )
         if self.verbose:
             logger.info(f"initial_fom: {initial_fom}")
         if self.debug_dir is not None:
             debug_weight = self.fom_calc.getWeight()
             np.save(self._debug_dir / "fom_calc_weight_map.npy", debug_weight)
-            debug_rect_left, debug_rect_right, debug_disparity = self.fom_calc.getRectifiedImagesAndDisparity()
+            (
+                debug_rect_left,
+                debug_rect_right,
+                debug_disparity,
+            ) = self.fom_calc.getRectifiedImagesAndDisparity()
             cv.imwrite(str(self._debug_dir / "rectified_left.png"), debug_rect_left)
             cv.imwrite(str(self._debug_dir / "rectified_right.png"), debug_rect_right)
             np.save(self._debug_dir / "rectified_disparity.npy", debug_disparity)
@@ -880,7 +987,9 @@ class InitialCalibration:
             logger.info("Search starts")
 
         # Set up search procedure for euler y.
-        def search_euler_ys(curr_comm_y: float, curr_diff_y: float) -> tuple[float, BaselineFrameStereoState]:
+        def search_euler_ys(
+            curr_comm_y: float, curr_diff_y: float
+        ) -> tuple[float, BaselineFrameStereoState]:
             logger.info(f"Searching for (comm_y={curr_comm_y:.4e}, diff_y={curr_diff_y:.4e}) ...")
             base_state = (
                 StateComposer.from_state(initial_stereo_state)
@@ -894,19 +1003,30 @@ class InitialCalibration:
                 time_after_main_search = curr_timer.elapsed
 
                 # Optimize x and z using 1D Golden section searches.
-                curr_state = diff_x_optimizer.optimize(curr_state, search_range_diff_x, tol_diff_x)[0]
-                curr_state = diff_z_optimizer.optimize(curr_state, search_range_diff_z, tol_diff_z)[0]
+                curr_state = diff_x_optimizer.optimize(curr_state, search_range_diff_x, tol_diff_x)[
+                    0
+                ]
+                curr_state = diff_z_optimizer.optimize(curr_state, search_range_diff_z, tol_diff_z)[
+                    0
+                ]
 
                 # Evaluate the FOM for this state.
                 curr_fom = self.fom_calc.calculate(
-                    self.image1_gpu, self.i1, self.image2_gpu, self.i2, curr_state, self.valid_mask_gpu
+                    self.image1_gpu,
+                    self.i1,
+                    self.image2_gpu,
+                    self.i2,
+                    curr_state,
+                    self.valid_mask_gpu,
                 )
             if self.verbose:
                 logger.info(
                     f"Time for (comm_y={curr_comm_y:.4e}, diff_y={curr_diff_y:.4e}): "
                     f"{curr_timer.elapsed:.3f}s (main search: {time_after_main_search:.3f}s)"
                 )
-                logger.info(f"FOM for (comm_y={curr_comm_y:.4e}, diff_y={curr_diff_y:.4e}): {curr_fom}")
+                logger.info(
+                    f"FOM for (comm_y={curr_comm_y:.4e}, diff_y={curr_diff_y:.4e}): {curr_fom}"
+                )
             return curr_fom, curr_state
 
         # Set up the grid spec in the search of euler y.
@@ -917,8 +1037,9 @@ class InitialCalibration:
             comm_y_grid_spec = [
                 # First, do a coarse search of 5 points.
                 (search_range_comm_y, tol_0),
-                # Then, do a finer search within the 2 neighborhoods of the best point (2 * tol from previous round),
-                # subtracting the two end points to avoid duplication (2 * tol of current round).
+                # Then, do a finer search within the 2 neighborhoods of the best point,
+                # (2 * tol from previous round), subtracting the two end points to avoid
+                # duplication, (2 * tol of current round).
                 (2 * tol_0 - 2 * tol_1, tol_1),
             ]
         diff_y_grid_to_search = get_search_grid(search_range_diff_y, tol_diff_y)
@@ -945,14 +1066,18 @@ class InitialCalibration:
             logger.info(f"Best y=(comm_y={best_comm_y}, diff_y={best_diff_y}): {best_fom}")
             logger.info(f"Best state: {best_state}")
         if self.debug_dir is not None:
-            dumpable = [(t[0], np.array(t[1].as_list(), np.float64), t[2], t[3]) for t in y_search_result]
+            dumpable = [
+                (t[0], np.array(t[1].as_list(), np.float64), t[2], t[3]) for t in y_search_result
+            ]
             with open(self._debug_dir / "debug_y_search_result.pickle", "wb") as f:
                 pickle.dump(dumpable, f)
 
         # Refine the best state by searching common y and z.
         state = best_state
         with contexttimer.Timer() as timer:
-            state = comm_y_optimizer.optimize(state, search_range_comm_y_golden, tol_comm_y_golden)[0]
+            state = comm_y_optimizer.optimize(state, search_range_comm_y_golden, tol_comm_y_golden)[
+                0
+            ]
             state = comm_z_optimizer.optimize(state, search_range_comm_z, tol_comm_z)[0]
         if self.verbose:
             logger.info(f"Time for common YZ search: {timer.elapsed:.3f}s")
@@ -1016,4 +1141,7 @@ class InitialCalibration:
         logger.info(f"diff euler x: {search_range_diff_x: 20.6f} | {tol_diff_x: 18.6f}")
         logger.info(f"diff euler z: {search_range_diff_z: 20.6f} | {tol_diff_z: 18.6f}")
         logger.info(f"comm euler z: {search_range_comm_z: 20.6f} | {tol_comm_z: 18.6f}")
-        logger.info(f"comm euler y: {search_range_comm_y_golden: 20.6f} | {tol_comm_y_golden: 18.6f} (golden section)")
+        logger.info(
+            f"comm euler y: {search_range_comm_y_golden: 20.6f} | {tol_comm_y_golden: 18.6f}"
+            " (golden section)"
+        )

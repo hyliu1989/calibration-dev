@@ -2,10 +2,10 @@
 
 It serves as a library for optimization-related tasks.
 """
-
 import dataclasses
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
+from collections.abc import Sequence
 
 import numpy as np
 import numpy.typing as npt
@@ -16,6 +16,7 @@ class GoldenSectionSearch:
 
     The search is modified such that the initial point can be either the 'a' or 'b' point.
     """
+
     G = (math.sqrt(5) - 1) / 2  # 1 / phi
     G2 = (3 - math.sqrt(5)) / 2  # 1 / phi^2
 
@@ -25,6 +26,8 @@ class GoldenSectionSearch:
 
     @dataclasses.dataclass
     class Variables:
+        """Golden section search variables."""
+
         lower_bound: float
         upper_bound: float
         a: float
@@ -43,11 +46,14 @@ class GoldenSectionSearch:
         np.testing.assert_almost_equal(var.a + self.G * interval, var.upper_bound)
         np.testing.assert_almost_equal(var.b + self.G2 * interval, var.upper_bound)
 
-    def search_with_range(self, search_range: float, init_a: float = None, init_b: float = None) -> tuple[float, float]:
+    def search_with_range(
+        self, search_range: float, init_a: float = None, init_b: float = None
+    ) -> tuple[float, float]:
         """Performs golden section search with given range and initial a or b point.
 
         Returns:
-            A tuple of (x, f(x)) where x is the estimated location of the minimum and f(x) is the function value at x.
+            A tuple of (x, f(x)) where x is the estimated location of the minimum and f(x) is the
+            function value at x.
         """
         if (init_a is None) == (init_b is None):
             raise ValueError("Exactly one of init_a and init_b must be provided.")
@@ -124,16 +130,18 @@ def nelder_mead(
 
     Args:
         func:  A scalar function to be minimized.
-        x0:  The initial point. If the initial simplex is not given, a new simplex will be created around x0.
-        initial_simplex:  A sequence of vertices of the initial simplex. If vertice have dimension n_dim, then the
-            length of the sequence should be (n_dim + 1).
+        x0:  The initial point. If the initial simplex is not given, a new simplex will be created
+            around x0.
+        initial_simplex:  A sequence of vertices of the initial simplex. If vertice have dimension
+            n_dim, then the length of the sequence should be (n_dim + 1).
         max_iter:  maximum number of iterations before the algorithm termination.
-        max_eval:  maximum number of func evaluations before the algorithm termination. This number might not be kept
-            all the time and can sometimes be surpassed by an additional (small) constant number of function evaluation.
+        max_eval:  maximum number of func evaluations before the algorithm termination. This number
+            might not be kept all the time and can sometimes be surpassed by an additional (small)
+            constant number of function evaluation.
 
     Returns:
-        A dictionary containing the minimum point returned by the algorithm (result['x']) and the function evaluation
-        at that point (result['func']).
+        A dictionary containing the minimum point returned by the algorithm (result['x']) and the
+        function evaluation at that point (result['func']).
     """
     if (x0 is None) and (initial_simplex is None):
         raise ValueError("Starting point or initial simplex are necessary")

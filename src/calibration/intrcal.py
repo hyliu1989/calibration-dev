@@ -15,10 +15,10 @@ def process_image_with_charuco_board(
 
     Returns:
         A tuple of the following:
-        - a list of sublists of detected points in 3D in the charuco board coordinate system, one sublist for one input
-            image.
-        - a list of sublists of corresponding  points in 2D in the image coordinate system, one sublist for one input
-            image.
+        - a list of sublists of detected points in 3D in the charuco board coordinate system, one
+            sublist for one input image.
+        - a list of sublists of corresponding  points in 2D in the image coordinate system, one
+            sublist for one input image.
     """
     dictionary = board.getDictionary()
     if detector_parameters is None:
@@ -41,7 +41,7 @@ def process_image_with_charuco_board(
                 print(f"images[{i}] does not yield a valid calibration pattern!!")
                 continue
             print("# of retrieved points:", charuco_retval)
-    
+
             obj_points, img_points = board.matchImagePoints(charuco_corners, charuco_ids)
             # obj_points is in (x, y, z) of 3D points of the board.
             # img_points is in (x, y) of 2D points in the projected image.
@@ -53,7 +53,7 @@ def process_image_with_charuco_board(
         if len(obj_points) < 4:
             print(f"Not enough detected points in images[{i}]")
             continue
-        
+
         object_point_sets.append(obj_points)
         image_point_sets.append(img_points)
 
@@ -66,6 +66,11 @@ def process_image_with_charuco_board(
 def filter_points_at_fov_edge(
     image_points, k_mat, fisheye=True, fov_limit_degree=80.0, object_points=None
 ) -> list[npt.NDArray] | tuple[list[npt.NDArray], list[npt.NDArray]]:
+    """Filters the FOV limit beyond which we remove the points calibration grid points.
+
+    Returns:
+        a list of image point or a tuple of lists of image and object points.
+    """
     assert fisheye is True
     fx = k_mat[0, 0]
     fy = k_mat[1, 1]
@@ -84,6 +89,7 @@ def filter_points_at_fov_edge(
 def display_intrinsics_calibration_result(
     res: tuple[float, npt.NDArray, npt.NDArray, Sequence[npt.NDArray], Sequence[npt.NDArray]],
 ) -> None:
+    """Prints the calibration result of the intrinsic matrix."""
     print("- loss:", res[0])
     print("- K matrix:")
     print(res[1])
@@ -97,17 +103,21 @@ def process_v0(
 ):
     """Calibration process version 0 for a certain project.
 
-    The first of each list, object_point_set and image_point_set, is expected to be derived from an image where the
-    checkerboard is at the center of the image.
+    The first of each list, object_point_set and image_point_set, is expected to be derived from an
+    image where the checkerboard is at the center of the image.
     """
     # Stage 1
     k_mat_init = np.array(
         [
-            [666, 0, 1928,],
+            [
+                666,
+                0,
+                1928,
+            ],
             [0, 666, 1460],
             [0, 0, 1],
         ],
-        dtype=np.float32
+        dtype=np.float32,
     )
     distortion_init = np.zeros(4, dtype=np.float32)
     flags = (
@@ -120,9 +130,12 @@ def process_v0(
         | cv.fisheye.CALIB_RECOMPUTE_EXTRINSIC
     )
     calibration_result0 = cv.fisheye.calibrate(
-        object_point_sets[0: 1],
-        image_point_sets[0: 1],
-        (0, 0,),
+        object_point_sets[0:1],
+        image_point_sets[0:1],
+        (
+            0,
+            0,
+        ),
         K=k_mat_init,
         D=distortion_init,
         flags=flags,
@@ -160,6 +173,7 @@ def process_v0(
 
 
 def save_intrinsics(filepath, res, id_cam) -> None:
+    """Saves an intrinsics file."""
     K = res[1]
     D = res[2]
     assert id_cam in [1, 2]

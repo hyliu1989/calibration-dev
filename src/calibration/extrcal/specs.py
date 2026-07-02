@@ -1,8 +1,9 @@
 """A module that contains search specification related functions.
 
-The functions convert row deviations in pixels to euler angles and vice versa for horizontal stereo cameras.  For a
-horizontal stereo, if the camera is misaligned by a small angle, a feature in the stereo rectified image will be on two
-different rows. This difference, which we called deviation, is what we want to convert to or from an euler angle.
+The functions convert row deviations in pixels to euler angles and vice versa for horizontal stereo
+cameras.  For a horizontal stereo, if the camera is misaligned by a small angle, a feature in the
+stereo rectified image will be on two different rows. This difference, which we called deviation,
+is what we want to convert to or from an euler angle.
 """
 from numbers import Real
 from typing import NamedTuple
@@ -17,6 +18,7 @@ class SpecValue(NamedTuple):
     - "p" for pixels
     - "d" for degrees
     """
+
     value: float
     unit: str
 
@@ -29,7 +31,9 @@ class SpecValue(NamedTuple):
 
     def _coerce_real(self, other: object, op: str) -> float:
         if not isinstance(other, Real):
-            raise TypeError(f"Unsupported operand type(s) for {op}: 'SpecValue' and {type(other).__name__!r}")
+            raise TypeError(
+                f"Unsupported operand type(s) for {op}: 'SpecValue' and {type(other).__name__!r}"
+            )
         return float(other)
 
     # ---------- unary ----------
@@ -97,7 +101,10 @@ class SpecValue(NamedTuple):
     # scalar / SpecValue -> float
     def __rtruediv__(self, other: object) -> float:
         if not isinstance(other, SpecValue):
-            raise TypeError(f"Unsupported division with a scalar numerator and {self.__class__.__name__} denominator.")
+            raise TypeError(
+                f"Unsupported division with a scalar numerator and "
+                f"{self.__class__.__name__} denominator."
+            )
         self._assert_same_unit(other, "/")
         if self.value == 0:
             raise ZeroDivisionError("division by zero SpecValue")
@@ -108,13 +115,20 @@ class SpecValue(NamedTuple):
         return float(self.value)
 
 
-def spec_value(arg1: str | tuple[float, str] | SpecValue, arg2: str | None = None) -> SpecValue:
-    """Creates a SpecValue instance.
+def spec_value(
+    arg1: float | str | tuple[float, str] | SpecValue, arg2: str | None = None
+) -> SpecValue:
+    """Creates and normalizes a SpecValue instance.
 
     Args:
-        arg1: If arg2 is None, arg1 is a SpecValue instance and is returned as is. If arg2 is not None, arg1 is the
-            value of the SpecValue.
-        arg2: The unit of the SpecValue.
+        arg1: It can be one of the following:
+            - A value for the spec (float or str). `arg2` must be non-None and specifies a unit in
+              this case.
+            - A SpecValue instance. `arg2` must be None.
+            - A tuple of the value and the unit. `arg2` must be None.
+            - A specification string "<value><unit>" where <value> must be parsable to a float and
+              <unit> must be "d" (degree) or "p" (pixel).
+        arg2: The unit of the SpecValue or None. See arg1 for more details.
     """
     value = None
     unit = None
@@ -138,7 +152,7 @@ def pixel_to_euler_x(row_deviation_pixel: float, focal_length_pixel: float) -> f
     """Converts a row pixel deviation to an euler x angle in degrees.
 
     Args:
-        row_deviation_pixel: The row pixel deviation between the two images in the stereo rectified pair.
+        row_deviation_pixel: The row pixel deviation between the two rectified images.
         focal_length_pixel: The focal length of the rectified image in pixels.
     """
     # pixelToEulerXPerturbation() in C++ codebase.
@@ -166,7 +180,7 @@ def pixel_to_euler_y(
     """Converts a pixel deviation to an euler y angle in degrees.
 
     Args:
-        row_deviation_pixel: The row pixel deviation between the two images in the stereo rectified pair.
+        row_deviation_pixel: The row pixel deviation between the two rectified images.
         focal_length_pixel: The focal length of the rectified image in pixels.
         image_size: The size of the rectified image in pixels, as (width, height).
     """
@@ -203,7 +217,7 @@ def pixel_to_euler_z(row_deviation_pixel: float, image_size: tuple[float, float]
     """Converts a pixel deviation to an euler z angle in degrees.
 
     Args:
-        row_deviation_pixel: The pixel deviation between the two images in the stereo rectified pair.
+        row_deviation_pixel: The pixel deviation between the two rectified images.
         image_size: The size of the rectified image in pixels, as (width, height).
     """
     # pixelToEulerZPerturbation() in C++ codebase.

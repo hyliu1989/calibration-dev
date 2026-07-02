@@ -1,5 +1,4 @@
 """The modules that handles making image patches for OmniGlue to find matched keypoints."""
-
 import glob
 import os
 import subprocess
@@ -10,7 +9,15 @@ import numpy as np
 
 
 class PatchMaker:
-    def __init__(self, bar_config: str, undistorted_image_dir: str, match_pair_output_dir: str | None = None, use_mono=False):
+    """Makes image patches for OmniGlue to find matched keypoints."""
+
+    def __init__(
+        self,
+        bar_config: str,
+        undistorted_image_dir: str,
+        match_pair_output_dir: str | None = None,
+        use_mono=False,
+    ):
         assert bar_config in ["A", "B"]
         self.bar_config = bar_config
 
@@ -34,11 +41,19 @@ class PatchMaker:
         # Map camera location to the sequence in a list
         self.camera_sequence_map = {k: int(v) - 1 for k, v in self.camera_id_map.items()}
 
-        self.match_pair_output_dir = undistorted_image_dir if match_pair_output_dir is None else match_pair_output_dir
+        self.match_pair_output_dir = (
+            undistorted_image_dir if match_pair_output_dir is None else match_pair_output_dir
+        )
 
-        image1_path = os.path.join(undistorted_image_dir, "cam1_mono.png" if use_mono else "cam1.png")
-        image2_path = os.path.join(undistorted_image_dir, "cam2_mono.png" if use_mono else "cam2.png")
-        image3_path = os.path.join(undistorted_image_dir, "cam3_mono.png" if use_mono else "cam3.png")
+        image1_path = os.path.join(
+            undistorted_image_dir, "cam1_mono.png" if use_mono else "cam1.png"
+        )
+        image2_path = os.path.join(
+            undistorted_image_dir, "cam2_mono.png" if use_mono else "cam2.png"
+        )
+        image3_path = os.path.join(
+            undistorted_image_dir, "cam3_mono.png" if use_mono else "cam3.png"
+        )
         self.image_path_sequence = [image1_path, image2_path, image3_path]
 
         image1 = cv.imread(image1_path)[..., ::-1]
@@ -48,7 +63,9 @@ class PatchMaker:
 
         # Variable `patches` is [((top-left-1), (top-left-2), (top-left-3), (crop size))]
         # Each tuple is in (x, y) format. Use None for no patch in that camera.
-        self.patches: list[tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]]] = []
+        self.patches: list[
+            tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]]
+        ] = []
 
     def show_whole(self, figsize=(15, 5)):
         fh = plt.figure(figsize=figsize)
@@ -67,10 +84,12 @@ class PatchMaker:
 
     def show_patch(self, tl1_x, tl1_y, tl2_x, tl2_y, tl3_x, tl3_y, crop_w, crop_h, figsize=(15, 5)):
         # Print a tuple for an entry of `self.patches`
-        print(f"    (({tl1_x},{tl1_y}), ({tl2_x},{tl2_y}), ({tl3_x},{tl3_y}), ({crop_w},{crop_h})),")
-        slice1 = np.s_[tl1_y:tl1_y + crop_h, tl1_x:tl1_x + crop_w]
-        slice2 = np.s_[tl2_y:tl2_y + crop_h, tl2_x:tl2_x + crop_w]
-        slice3 = np.s_[tl3_y:tl3_y + crop_h, tl3_x:tl3_x + crop_w]
+        print(
+            f"    (({tl1_x},{tl1_y}), ({tl2_x},{tl2_y}), ({tl3_x},{tl3_y}), ({crop_w},{crop_h})),"
+        )
+        slice1 = np.s_[tl1_y : tl1_y + crop_h, tl1_x : tl1_x + crop_w]
+        slice2 = np.s_[tl2_y : tl2_y + crop_h, tl2_x : tl2_x + crop_w]
+        slice3 = np.s_[tl3_y : tl3_y + crop_h, tl3_x : tl3_x + crop_w]
         img1 = self.image_sequence[0][slice1]
         img2 = self.image_sequence[1][slice2]
         img3 = self.image_sequence[2][slice3]
@@ -95,7 +114,10 @@ class PatchMaker:
         crop_w, crop_h = crop_tuple
         return self.show_patch(tl1_x, tl1_y, tl2_x, tl2_y, tl3_x, tl3_y, crop_w, crop_h, figsize)
 
-    def set_patches(self, patches: list[tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]]]):
+    def set_patches(
+        self,
+        patches: list[tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]]],
+    ):
         self.patches = patches.copy()
 
     def dispatch(self):
@@ -111,18 +133,25 @@ class PatchMaker:
                 tl_cam2 = top_left_corners[1]
                 output_name_extra = f"{i:03d}-{tl_cam2[0]}_{tl_cam2[1]}-{crop[0]}x{crop[1]}"
                 output_name = (
-                    f"{self.bar_config}-cam{self.camera_id_map['left']}cam{self.camera_id_map['right']}"
+                    f"{self.bar_config}"
+                    f"-cam{self.camera_id_map['left']}cam{self.camera_id_map['right']}"
                     f"-{output_name_extra}.npy"
                 )
                 command = [
                     "python",
                     "find_key_points_process.py",
-                    "--image0", self.image_path_sequence[self.camera_sequence_map["left"]],
-                    "--image1", self.image_path_sequence[self.camera_sequence_map["right"]],
-                    "--tl0", f"{tl0}".replace(" ", ""),
-                    "--tl1", f"{tl1}".replace(" ", ""),
-                    "--crop_size", f"{crop}".replace(" ", ""),
-                    "--output", f"{self.match_pair_output_dir}/{output_name}",
+                    "--image0",
+                    self.image_path_sequence[self.camera_sequence_map["left"]],
+                    "--image1",
+                    self.image_path_sequence[self.camera_sequence_map["right"]],
+                    "--tl0",
+                    f"{tl0}".replace(" ", ""),
+                    "--tl1",
+                    f"{tl1}".replace(" ", ""),
+                    "--crop_size",
+                    f"{crop}".replace(" ", ""),
+                    "--output",
+                    f"{self.match_pair_output_dir}/{output_name}",
                 ]
                 processes.append(subprocess.run(command))
 
@@ -133,18 +162,25 @@ class PatchMaker:
                 tl_cam2 = top_left_corners[1]
                 output_name_extra = f"{i:03d}-{tl_cam2[0]}_{tl_cam2[1]}-{crop[0]}x{crop[1]}"
                 output_name = (
-                    f"{self.bar_config}-cam{self.camera_id_map['top']}cam{self.camera_id_map['bottom']}"
+                    f"{self.bar_config}"
+                    f"-cam{self.camera_id_map['top']}cam{self.camera_id_map['bottom']}"
                     f"-{output_name_extra}.npy"
                 )
                 command = [
                     "python",
                     "find_key_points_process.py",
-                    "--image0", self.image_path_sequence[self.camera_sequence_map["top"]],
-                    "--image1", self.image_path_sequence[self.camera_sequence_map["bottom"]],
-                    "--tl0", f"{tl0}".replace(" ", ""),
-                    "--tl1", f"{tl1}".replace(" ", ""),
-                    "--crop_size", f"{crop}".replace(" ", ""),
-                    "--output", f"{self.match_pair_output_dir}/{output_name}",
+                    "--image0",
+                    self.image_path_sequence[self.camera_sequence_map["top"]],
+                    "--image1",
+                    self.image_path_sequence[self.camera_sequence_map["bottom"]],
+                    "--tl0",
+                    f"{tl0}".replace(" ", ""),
+                    "--tl1",
+                    f"{tl1}".replace(" ", ""),
+                    "--crop_size",
+                    f"{crop}".replace(" ", ""),
+                    "--output",
+                    f"{self.match_pair_output_dir}/{output_name}",
                 ]
                 processes.append(subprocess.run(command))
 
@@ -159,11 +195,13 @@ class PatchMaker:
 
         match_point_set_h = glob.glob(
             self.match_pair_output_dir
-            + f"/{self.bar_config}-cam{self.camera_id_map['left']}cam{self.camera_id_map['right']}-{index:03d}-*.npy"
+            + f"/{self.bar_config}-cam{self.camera_id_map['left']}cam{self.camera_id_map['right']}"
+            + f"-{index:03d}-*.npy"
         )
         match_point_set_v = glob.glob(
             self.match_pair_output_dir
-            + f"/{self.bar_config}-cam{self.camera_id_map['top']}cam{self.camera_id_map['bottom']}-{index:03d}-*.npy"
+            + f"/{self.bar_config}-cam{self.camera_id_map['top']}cam{self.camera_id_map['bottom']}"
+            + f"-{index:03d}-*.npy"
         )
         if not match_point_set_h and not match_point_set_v:
             return None

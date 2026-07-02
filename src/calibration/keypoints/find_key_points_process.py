@@ -1,3 +1,4 @@
+"""Finds key points using OmniGlue."""
 import argparse
 import os
 
@@ -7,6 +8,7 @@ import omniglue
 
 
 def two_tuple(s: str) -> tuple[int, int]:
+    """Parses a string into a tuple of two integers."""
     s.replace(" ", "")
     s = s.lstrip("(").rstrip(")")
     parts = s.split(",")
@@ -14,6 +16,7 @@ def two_tuple(s: str) -> tuple[int, int]:
 
 
 def main():
+    """Main function."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--image0", type=str, required=True, help="Path to the input image0.")
     parser.add_argument("--image1", type=str, required=True, help="Path to the input image1.")
@@ -21,23 +24,27 @@ def main():
         "--tl0",
         type=two_tuple,
         required=True,
-        help="The top-left corner in x,y for cropping image0, as a string."
+        help="The top-left corner in x,y for cropping image0, as a string.",
     )
     parser.add_argument(
         "--tl1",
         type=two_tuple,
         required=True,
-        help="The top-left corner in x,y for cropping image1, as a string."
+        help="The top-left corner in x,y for cropping image1, as a string.",
     )
     parser.add_argument(
         "--crop_size",
         "-c",
         type=two_tuple,
         default=(300, 200),
-        help="The width and height of the cropped image."
+        help="The width and height of the cropped image.",
     )
-    parser.add_argument("--output", type=str, required=True, help="Path to save the output matches.")
-    parser.add_argument("--threshold", type=float, default=1e-5, help="Threshold for keypoint detection.")
+    parser.add_argument(
+        "--output", type=str, required=True, help="Path to save the output matches."
+    )
+    parser.add_argument(
+        "--threshold", type=float, default=1e-5, help="Threshold for keypoint detection."
+    )
     args = parser.parse_args()
 
     omniglue.omniglue_extract.MATCH_THRESHOLD = args.threshold
@@ -50,8 +57,8 @@ def main():
     crop_w, crop_h = args.crop_size
     tl0_x, tl0_y = args.tl0
     tl1_x, tl1_y = args.tl1
-    slice0 = np.s_[tl0_y:tl0_y + crop_h, tl0_x:tl0_x + crop_w]
-    slice1 = np.s_[tl1_y:tl1_y + crop_h, tl1_x:tl1_x + crop_w]
+    slice0 = np.s_[tl0_y : tl0_y + crop_h, tl0_x : tl0_x + crop_w]
+    slice1 = np.s_[tl1_y : tl1_y + crop_h, tl1_x : tl1_x + crop_w]
 
     # Find matches and sort by confidence
     model_base_path = os.path.join(os.path.dirname(__file__), "../models")
@@ -71,8 +78,12 @@ def main():
     match_kp1s_in_original = match_kp1s + np.array([[tl1_x, tl1_y]])
     result = np.array(
         [
-            np.hstack([match_kp0s_in_original, match_confidences.astype(np.float64)[:, np.newaxis]]),
-            np.hstack([match_kp1s_in_original, match_confidences.astype(np.float64)[:, np.newaxis]]),
+            np.hstack(
+                [match_kp0s_in_original, match_confidences.astype(np.float64)[:, np.newaxis]]
+            ),
+            np.hstack(
+                [match_kp1s_in_original, match_confidences.astype(np.float64)[:, np.newaxis]]
+            ),
         ]
     )
     # The dimension check
