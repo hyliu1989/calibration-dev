@@ -1,8 +1,10 @@
 """A module performing extrinsics calibration."""
+import dataclasses
 import itertools
 import logging
 import math
 import pickle
+import warnings
 from collections.abc import Callable
 from collections.abc import Sequence
 from pathlib import Path
@@ -25,7 +27,7 @@ from scipy.spatial.transform import Rotation
 
 
 logger = logging.getLogger(__name__)
-__all__ = ["StateComposer", "InitialCalibration"]
+__all__ = ["StateComposer", "InitialCalibration", "CalibrationSearchSpec"]
 GRID_EVAL_OUTPUT_TYPE = list[tuple[float, tuple[float, float]]]
 
 
@@ -462,6 +464,32 @@ class GoldenSectionEulerAngleOptimizer:
         return final_state, -f_x
 
 
+@dataclasses.dataclass
+class CalibrationSearchSpec:
+    """Integrated search range/tolerance specification for InitialCalibration.calibrate().
+
+    Each field is a (search_range, tolerance) pair of SpecValue, in either degrees ("d") or pixels
+    ("p"). See InitialCalibration.calibrate() for how each field is used in the search.
+
+    Attributes:
+        diff_y: The search range and tolerance for the differential euler y angle.
+        comm_y: The search range and tolerance for the common euler y angle (formerly Tz).
+        diff_x: The search range and tolerance for the differential euler x angle.
+        diff_z: The search range and tolerance for the differential euler z angle.
+        comm_z_golden: The search range and tolerance for the common euler z angle (formerly Ty),
+            used in the golden section search.
+        comm_y_golden: The search range and tolerance of the golden section search for the common
+            euler y angle (formerly Tz).
+    """
+
+    diff_y: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(4.25, "p"))
+    comm_y: tuple[SpecValue, SpecValue] = (SpecValue(0.0, "d"), SpecValue(4.25, "p"))
+    diff_x: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(0.5, "p"))
+    diff_z: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(0.5, "p"))
+    comm_z_golden: tuple[SpecValue, SpecValue] = (SpecValue(6.0, "d"), SpecValue(1.0, "p"))
+    comm_y_golden: tuple[SpecValue, SpecValue] = (SpecValue(0.5, "d"), SpecValue(0.4, "p"))
+
+
 class InitialCalibration:
     """A class that performs initial calibration of a stereo pair.
 
@@ -513,7 +541,7 @@ class InitialCalibration:
         self.i2 = i2
         self.valid_mask_gpu = pyhammer.gpu_mat(valid_mask) if valid_mask is not None else None
         self.planner = planner
-        input_size = image1.shape[:2][::-1]
+        input_size = (image1.shape[1], image1.shape[0])
         if specified_rectified_size is None:
             specified_rectified_size = input_size
         self._specified_rectified_size = specified_rectified_size
@@ -585,7 +613,7 @@ class InitialCalibration:
         self.fom_z_roi = [FomCalculator.create(p, **fom_calc_kwargs) for p in self.z_roi_planners]
 
     @staticmethod
-    def get_basic_refinement_specs() -> dict[str, tuple[SpecValue, SpecValue]]:
+    def get_basic_refinement_specs() -> CalibrationSearchSpec:
         """Returns the basic refinement specifications for calibrate().
 
         This is based on Hammerhead specs:
@@ -606,23 +634,17 @@ class InitialCalibration:
             calibration_params.max_angle_z = 0.871543;  // unit: pixels
             calibration_params.acc_z = 0.435567;  // unit: pixels
         """
-        return dict(
-            search_range_and_tol_diff_y=(SpecValue(0.000000000, "p"), SpecValue(4.374110, "p")),
-            search_range_and_tol_comm_y=(SpecValue(0.000000000, "p"), SpecValue(4.374110, "p")),
-            search_range_and_tol_diff_x=(SpecValue(2 * 46.8509, "p"), SpecValue(0.468509, "p")),
-            search_range_and_tol_diff_z=(SpecValue(2 * 12.5664, "p"), SpecValue(0.251327, "p")),
-            search_range_and_tol_comm_z_golden=(
-                SpecValue(25.1327 - -25.1327, "p"),
-                SpecValue(1.00531, "p"),
-            ),
-            search_range_and_tol_comm_y_golden=(
-                SpecValue(0.871543 - -0.869913, "p"),
-                SpecValue(0.435567, "p"),
-            ),
+        return CalibrationSearchSpec(
+            diff_y=(SpecValue(0.000000000, "p"), SpecValue(4.374110, "p")),
+            comm_y=(SpecValue(0.000000000, "p"), SpecValue(4.374110, "p")),
+            diff_x=(SpecValue(2 * 46.8509, "p"), SpecValue(0.468509, "p")),
+            diff_z=(SpecValue(2 * 12.5664, "p"), SpecValue(0.251327, "p")),
+            comm_z_golden=(SpecValue(25.1327 - -25.1327, "p"), SpecValue(1.00531, "p")),
+            comm_y_golden=(SpecValue(0.871543 - -0.869913, "p"), SpecValue(0.435567, "p")),
         )
 
     @staticmethod
-    def get_basic_factory_calibration_specs():
+    def get_basic_factory_calibration_specs() -> CalibrationSearchSpec:
         """Returns the basic factory calibration specifications for calibrate().
 
         This is based on Hammerhead specs:
@@ -643,19 +665,13 @@ class InitialCalibration:
             calibration_params.max_angle_z = 0.871543;  // unit: pixels
             calibration_params.acc_z = 0.435567;  // unit: pixels
         """
-        return dict(
-            search_range_and_tol_diff_y=(SpecValue(2 * 13.2469, "p"), SpecValue(4.374110, "p")),
-            search_range_and_tol_comm_y=(SpecValue(0.000000000, "p"), SpecValue(4.374110, "p")),
-            search_range_and_tol_diff_x=(SpecValue(2 * 281.106, "p"), SpecValue(0.937018, "p")),
-            search_range_and_tol_diff_z=(SpecValue(2 * 75.3982, "p"), SpecValue(0.502655, "p")),
-            search_range_and_tol_comm_z_golden=(
-                SpecValue(75.3982 - -75.3982, "p"),
-                SpecValue(1.00531, "p"),
-            ),
-            search_range_and_tol_comm_y_golden=(
-                SpecValue(0.871543 - -0.869913, "p"),
-                SpecValue(0.435567, "p"),
-            ),
+        return CalibrationSearchSpec(
+            diff_y=(SpecValue(2 * 13.2469, "p"), SpecValue(4.374110, "p")),
+            comm_y=(SpecValue(0.000000000, "p"), SpecValue(4.374110, "p")),
+            diff_x=(SpecValue(2 * 281.106, "p"), SpecValue(0.937018, "p")),
+            diff_z=(SpecValue(2 * 75.3982, "p"), SpecValue(0.502655, "p")),
+            comm_z_golden=(SpecValue(75.3982 - -75.3982, "p"), SpecValue(1.00531, "p")),
+            comm_y_golden=(SpecValue(0.871543 - -0.869913, "p"), SpecValue(0.435567, "p")),
         )
 
     @property
@@ -784,62 +800,109 @@ class InitialCalibration:
         best_angles = nm_result["x"]
         return state_composer.state_from_angles(*best_angles)
 
+    def calibrate_with_angle_spec(
+        self,
+        initial_stereo_state: BaselineFrameStereoState,
+        search_range_and_tol_diff_y_degrees: tuple[float, float],
+        search_range_and_tol_comm_y_degrees: tuple[float, float],
+        search_range_and_tol_diff_x_degrees: tuple[float, float],
+        search_range_and_tol_diff_z_degrees: tuple[float, float],
+        search_range_and_tol_comm_z_golden_degrees: tuple[float, float],
+        search_range_and_tol_comm_y_golden_degrees: tuple[float, float],
+        dry_run_for_spec: bool = False,
+    ):
+        """Deprecated. Use calibrate() with a CalibrationSearchSpec instead.
+
+        This method is kept only for backward compatibility and will be removed in a future
+        version. It converts the given per-axis degree tuples into a CalibrationSearchSpec and
+        delegates to calibrate().
+        """
+        warnings.warn(
+            "calibrate_with_angle_spec() is deprecated; use calibrate() with a "
+            "CalibrationSearchSpec instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        spec = CalibrationSearchSpec(
+            diff_y=tuple(SpecValue(v, "d") for v in search_range_and_tol_diff_y_degrees),
+            comm_y=tuple(SpecValue(v, "d") for v in search_range_and_tol_comm_y_degrees),
+            diff_x=tuple(SpecValue(v, "d") for v in search_range_and_tol_diff_x_degrees),
+            diff_z=tuple(SpecValue(v, "d") for v in search_range_and_tol_diff_z_degrees),
+            comm_z_golden=tuple(
+                SpecValue(v, "d") for v in search_range_and_tol_comm_z_golden_degrees
+            ),
+            comm_y_golden=tuple(
+                SpecValue(v, "d") for v in search_range_and_tol_comm_y_golden_degrees
+            ),
+        )
+        return self.calibrate(initial_stereo_state, spec=spec, dry_run_for_spec=dry_run_for_spec)
+
     def calibrate(
         self,
         initial_stereo_state: BaselineFrameStereoState,
-        search_range_and_tol_diff_y: tuple[SpecValue, SpecValue] = (
-            SpecValue(6.0, "d"),
-            SpecValue(4.25, "p"),
-        ),
-        search_range_and_tol_comm_y: tuple[SpecValue, SpecValue] = (
-            SpecValue(0.0, "d"),
-            SpecValue(4.25, "p"),
-        ),
-        search_range_and_tol_diff_x: tuple[SpecValue, SpecValue] = (
-            SpecValue(6.0, "d"),
-            SpecValue(0.5, "p"),
-        ),
-        search_range_and_tol_diff_z: tuple[SpecValue, SpecValue] = (
-            SpecValue(6.0, "d"),
-            SpecValue(0.5, "p"),
-        ),
-        search_range_and_tol_comm_z_golden: tuple[SpecValue, SpecValue] = (
-            SpecValue(6.0, "d"),
-            SpecValue(1.0, "p"),
-        ),
-        search_range_and_tol_comm_y_golden: tuple[SpecValue, SpecValue] = (
-            SpecValue(0.5, "d"),
-            SpecValue(0.4, "p"),
-        ),
+        spec: CalibrationSearchSpec | None = None,
         dry_run_for_spec: bool = False,
+        *,
+        search_range_and_tol_diff_y: tuple[SpecValue, SpecValue] | None = None,
+        search_range_and_tol_comm_y: tuple[SpecValue, SpecValue] | None = None,
+        search_range_and_tol_diff_x: tuple[SpecValue, SpecValue] | None = None,
+        search_range_and_tol_diff_z: tuple[SpecValue, SpecValue] | None = None,
+        search_range_and_tol_comm_z_golden: tuple[SpecValue, SpecValue] | None = None,
+        search_range_and_tol_comm_y_golden: tuple[SpecValue, SpecValue] | None = None,
     ) -> BaselineFrameStereoState | dict[str, tuple[float, ...]]:
         """Performs the initial calibration.
 
-        Each dictionary in the search range and tolerance specifications should have at most one of
-        the following keys:
-            - "angle": The value of the search range or tolerance in degrees.
-            - "pixel": The value of the search range or tolerance in pixels.
-
         Args:
             initial_stereo_state: The initial stereo state which will be used as a pre-condition.
-            search_range_and_tol_diff_y: The search range and tolerance for the
-                differential euler y angle.
-            search_range_and_tol_comm_y: The search range and tolerance for the
-                common euler y angle (formerly Tz).
-            search_range_and_tol_diff_x: The search range and tolerance for the
-                differential euler x angle.
-            search_range_and_tol_diff_z: The search range and tolerance for the
-                differential euler z angle.
-            search_range_and_tol_comm_z_golden: The search range and tolerance for the
-                common euler z angle (formerly Ty).
-            search_range_and_tol_comm_y_golden: The search range and tolerance of golden section
-                search for the common euler y angle (formerly Tz).
+            spec: The integrated search range/tolerance specification. Defaults to
+                CalibrationSearchSpec() if not provided (and none of the deprecated
+                search_range_and_tol_* keyword arguments below are used).
             dry_run_for_spec: If True, do not perform the calibration, just return the parsed search
                 ranges and tolerances. This is useful for testing and checking the specification
                 parsing.
+            search_range_and_tol_diff_y: Deprecated. Use `spec.diff_y` instead.
+            search_range_and_tol_comm_y: Deprecated. Use `spec.comm_y` instead.
+            search_range_and_tol_diff_x: Deprecated. Use `spec.diff_x` instead.
+            search_range_and_tol_diff_z: Deprecated. Use `spec.diff_z` instead.
+            search_range_and_tol_comm_z_golden: Deprecated. Use `spec.comm_z_golden` instead.
+            search_range_and_tol_comm_y_golden: Deprecated. Use `spec.comm_y_golden` instead.
         """
+        legacy_overrides = {
+            k: v
+            for k, v in dict(
+                diff_y=search_range_and_tol_diff_y,
+                comm_y=search_range_and_tol_comm_y,
+                diff_x=search_range_and_tol_diff_x,
+                diff_z=search_range_and_tol_diff_z,
+                comm_z_golden=search_range_and_tol_comm_z_golden,
+                comm_y_golden=search_range_and_tol_comm_y_golden,
+            ).items()
+            if v is not None
+        }
+        if legacy_overrides:
+            warnings.warn(
+                "Passing search_range_and_tol_* keyword arguments to calibrate() is deprecated "
+                "and will be removed in a future version; pass a CalibrationSearchSpec via "
+                "`spec=` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if spec is not None:
+                raise TypeError(
+                    "calibrate() cannot mix `spec=` with the deprecated search_range_and_tol_* "
+                    "keyword arguments."
+                )
+            spec = dataclasses.replace(CalibrationSearchSpec(), **legacy_overrides)
+        if spec is None:
+            spec = CalibrationSearchSpec()
+        return self._calibrate(initial_stereo_state, spec, dry_run_for_spec)
 
-        def to_angle(spec: specs.SpecValue, angle_name: str) -> float:
+    def _spec_to_degrees_dict(
+        self, calib_spec: CalibrationSearchSpec
+    ) -> dict[str, tuple[float, ...]]:
+        """Converts a CalibrationSearchSpec to a dict of (range, tolerance) pairs in degrees."""
+
+        def to_angle(spec: SpecValue, angle_name: str) -> float:
             """Parses a specification and returns the value in degrees."""
             if spec.unit == "d":
                 return spec.value
@@ -855,82 +918,28 @@ class InitialCalibration:
             else:
                 raise ValueError(f"Spec unit must have either 'd' or 'p' key, got '{spec.unit}'")
 
-        # convert the search ranges and tolerances to degrees.
-        specs_dict = dict(
-            search_range_and_tol_diff_y_degrees=tuple(
-                to_angle(s, "y") for s in search_range_and_tol_diff_y
-            ),
-            search_range_and_tol_comm_y_degrees=tuple(
-                to_angle(s, "y") for s in search_range_and_tol_comm_y
-            ),
-            search_range_and_tol_diff_x_degrees=tuple(
-                to_angle(s, "x") for s in search_range_and_tol_diff_x
-            ),
-            search_range_and_tol_diff_z_degrees=tuple(
-                to_angle(s, "z") for s in search_range_and_tol_diff_z
-            ),
+        return dict(
+            search_range_and_tol_diff_y_degrees=tuple(to_angle(s, "y") for s in calib_spec.diff_y),
+            search_range_and_tol_comm_y_degrees=tuple(to_angle(s, "y") for s in calib_spec.comm_y),
+            search_range_and_tol_diff_x_degrees=tuple(to_angle(s, "x") for s in calib_spec.diff_x),
+            search_range_and_tol_diff_z_degrees=tuple(to_angle(s, "z") for s in calib_spec.diff_z),
             search_range_and_tol_comm_z_golden_degrees=tuple(
-                to_angle(s, "z") for s in search_range_and_tol_comm_z_golden
+                to_angle(s, "z") for s in calib_spec.comm_z_golden
             ),
             search_range_and_tol_comm_y_golden_degrees=tuple(
-                to_angle(s, "y") for s in search_range_and_tol_comm_y_golden
+                to_angle(s, "y") for s in calib_spec.comm_y_golden
             ),
         )
-        if dry_run_for_spec:
-            logger.info("Dry run for spec parsing. Returning without performing calibration.")
-            self._display_search_spec(**specs_dict)
-            return specs_dict
 
-        return self.calibrate_with_angle_spec(
-            initial_stereo_state=initial_stereo_state, **specs_dict
-        )
-
-    def calibrate_with_angle_spec(  # noqa: C901
+    def _calibrate(  # noqa: C901
         self,
         initial_stereo_state: BaselineFrameStereoState,
-        search_range_and_tol_diff_y_degrees: tuple[float, float],
-        search_range_and_tol_comm_y_degrees: tuple[float, float],
-        search_range_and_tol_diff_x_degrees: tuple[float, float],
-        search_range_and_tol_diff_z_degrees: tuple[float, float],
-        search_range_and_tol_comm_z_golden_degrees: tuple[float, float],
-        search_range_and_tol_comm_y_golden_degrees: tuple[float, float],
-        dry_run_for_spec: bool = False,
-    ):
-        """Performs the initial calibration.
-
-        Args:
-            initial_stereo_state: The initial stereo state which will be used as a pre-condition.
-            search_range_and_tol_diff_y_degrees: The search range and tolerance for the
-                differential euler y angle, in degrees. This is equivalent to the old terminology
-                (2 * vib_y, tol_y).
-            search_range_and_tol_comm_y_degrees: The search range and tolerance for the
-                common euler y angle (formerly Tz), in degrees. This is used in the grid search of
-                euler-y in addition to the differential euler y.
-            search_range_and_tol_diff_x_degrees: The search range and tolerance for the
-                differential euler x angle, in degrees. This is equivalent to the old terminology
-                (2 * vib_x, tol_x).
-            search_range_and_tol_diff_z_degrees: The search range and tolerance for the
-                differential euler z angle, in degrees. This is equivalent to the old terminology
-                (2 * vib_z, tol_z).
-            search_range_and_tol_comm_z_golden_degrees: The search range and tolerance for the
-                common euler z angle (formerly Ty), in degrees. This is equivalent to the old
-                terminology (max_angle_y - min_angle_y, acc_y).
-            search_range_and_tol_comm_y_golden_degrees: The search range and tolerance for the
-                common euler y angle (formerly Tz), in degrees. This is equivalent to the old
-                terminology (max_angle_z - min_angle_z, acc_z). This is used in the Golden section
-                search.
-            dry_run_for_spec: If True, do not perform the calibration, just return the parsed search
-                ranges and tolerances. This is useful for testing and checking the specification
-                parsing.
-        """
-        specs_dict = dict(
-            search_range_and_tol_diff_y_degrees=search_range_and_tol_diff_y_degrees,
-            search_range_and_tol_comm_y_degrees=search_range_and_tol_comm_y_degrees,
-            search_range_and_tol_diff_x_degrees=search_range_and_tol_diff_x_degrees,
-            search_range_and_tol_diff_z_degrees=search_range_and_tol_diff_z_degrees,
-            search_range_and_tol_comm_z_golden_degrees=search_range_and_tol_comm_z_golden_degrees,
-            search_range_and_tol_comm_y_golden_degrees=search_range_and_tol_comm_y_golden_degrees,
-        )
+        spec: CalibrationSearchSpec,
+        dry_run_for_spec: bool,
+    ) -> BaselineFrameStereoState | dict[str, tuple[float, ...]]:
+        """Performs the initial calibration. This is the real implementation behind calibrate()."""
+        # convert the search ranges and tolerances to degrees.
+        specs_dict = self._spec_to_degrees_dict(spec)
         if dry_run_for_spec:
             logger.info("Dry run for spec parsing. Returning without performing calibration.")
             self._display_search_spec(**specs_dict)
@@ -939,12 +948,14 @@ class InitialCalibration:
         if self.verbose:
             self._display_search_spec(**specs_dict)
 
-        search_range_diff_y, tol_diff_y = search_range_and_tol_diff_y_degrees
-        search_range_comm_y, tol_comm_y = search_range_and_tol_comm_y_degrees
-        search_range_diff_x, tol_diff_x = search_range_and_tol_diff_x_degrees
-        search_range_diff_z, tol_diff_z = search_range_and_tol_diff_z_degrees
-        search_range_comm_z, tol_comm_z = search_range_and_tol_comm_z_golden_degrees
-        search_range_comm_y_golden, tol_comm_y_golden = search_range_and_tol_comm_y_golden_degrees
+        search_range_diff_y, tol_diff_y = specs_dict["search_range_and_tol_diff_y_degrees"]
+        search_range_comm_y, tol_comm_y = specs_dict["search_range_and_tol_comm_y_degrees"]
+        search_range_diff_x, tol_diff_x = specs_dict["search_range_and_tol_diff_x_degrees"]
+        search_range_diff_z, tol_diff_z = specs_dict["search_range_and_tol_diff_z_degrees"]
+        search_range_comm_z, tol_comm_z = specs_dict["search_range_and_tol_comm_z_golden_degrees"]
+        search_range_comm_y_golden, tol_comm_y_golden = specs_dict[
+            "search_range_and_tol_comm_y_golden_degrees"
+        ]
 
         initial_fom = self.fom_calc.calculate(
             self.image1_gpu,
