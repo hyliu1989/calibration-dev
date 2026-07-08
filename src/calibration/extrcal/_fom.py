@@ -566,14 +566,18 @@ class InitialCalibration:
 
         # configure the ROI for FOM calculation.
         self.roi_directive = roi_directive
-        roi_planners = self._compute_golden_section_roi_planners(roi_directive, planner)
+        roi_planners = self._compute_golden_section_roi_planners(
+            roi_directive, planner, self._rectified_size
+        )
         self.x_roi_planners, self.z_roi_planners = roi_planners
         self.fom_x_roi = [FomCalculator.create(p, **fom_calc_kwargs) for p in self.x_roi_planners]
         self.fom_z_roi = [FomCalculator.create(p, **fom_calc_kwargs) for p in self.z_roi_planners]
 
     @staticmethod
     def _compute_golden_section_roi_planners(
-        roi_directive: str, planner: pyhammer.cpyhammer.AbstractPlanner | None = None
+        roi_directive: str,
+        planner: pyhammer.cpyhammer.AbstractPlanner | None = None,
+        original_rectified_size: tuple[int, int] | None = None,
     ):
         if roi_directive == "horizontal":
             row_roi_factor = 1 / 2
@@ -616,8 +620,147 @@ class InitialCalibration:
         elif roi_directive == "full":
             x_roi_planners = [planner]
             z_roi_planners = [planner]
+        elif roi_directive == "principal_ray":
+            assert isinstance(planner, pyhammer.cpyhammer.FixedViewRectilinearPlanner)
+            assert original_rectified_size is not None
+            x_roi_planners, z_roi_planners = InitialCalibration._principal_ray_roi_planners(
+                planner, original_rectified_size
+            )
         else:
             raise NotImplementedError(f"roi_directive={roi_directive} is not implemented.")
+
+        return x_roi_planners, z_roi_planners
+
+    @staticmethod
+    def _clip_window_to_canvas(
+        center_ratio: float, width_ratio: float
+    ) -> tuple[float, float] | None:
+        """Clips a 1D window to the [0, 1] canvas.
+
+        Args:
+            center_ratio: The window center, as a ratio of the full canvas extent (0 = left/top
+                edge, 1 = right/bottom edge).
+            width_ratio: The window width, as a ratio of the full canvas extent.
+
+        Returns:
+            A (clipped_width_ratio, offset_ratio) pair, where offset_ratio is the clipped
+            window's center expressed relative to the canvas center (0 = canvas center), i.e. in
+            the convention windowed_planner_wrap() expects. Returns None if the window falls
+            entirely outside the canvas.
+        """
+        left = center_ratio - width_ratio / 2
+        right = center_ratio + width_ratio / 2
+        clipped_left = max(0.0, left)
+        clipped_right = min(1.0, right)
+        clipped_width = clipped_right - clipped_left
+        if clipped_width <= 0:
+            return None
+        offset_ratio = (clipped_left + clipped_right) / 2 - 0.5
+        return clipped_width, offset_ratio
+
+    @staticmethod
+    def _principal_ray_roi_planners(
+        planner: pyhammer.cpyhammer.AbstractPlanner,
+        original_rectified_size: tuple[int, int],
+        row_roi_factor: float = 0.75,
+        x_roi_width_ratio: float = 0.33,
+        z_roi_width_ratio: float = 0.33,
+        z_roi_min_width_ratio: float = 0.25,
+    ) -> tuple[list[pyhammer.cpyhammer.AbstractPlanner], list[pyhammer.cpyhammer.AbstractPlanner]]:
+        """Builds ROI planners centered on the principal ray (cx, cy).
+
+        The x ROI (used for the euler-x search) is a single window of width
+        `x_roi_width_ratio` * image_width, centered on the principal ray. The z ROI (used for the
+        euler-z search) is made of up to two windows of width `z_roi_width_ratio` * image_width,
+        mirrored around the principal ray so that, when the principal ray is near the canvas
+        center, they land on the far left and far right ends of the rectified image (matching the
+        "horizontal" directive). All windows are cropped to the rectified image boundary. If
+        cropping a z ROI window would shrink it below `z_roi_min_width_ratio` * image_width, that
+        window is dropped instead of kept in a degraded state; this happens when the principal ray
+        is far enough off-center that one side no longer has room for a full z ROI.
+
+        Args:
+            planner: A FixedViewRectilinearPlanner-like planner exposing .cx and .cy in pixels.
+            original_rectified_size: The (width, height) of the rectified image, in pixels.
+            row_roi_factor: The height of the ROI windows, as a ratio of the rectified image
+                height, centered on the principal ray's row and cropped to the image boundary.
+            x_roi_width_ratio: The width of the x ROI window, as a ratio of the rectified image
+                width.
+            z_roi_width_ratio: The nominal width of each z ROI window, as a ratio of the rectified
+                image width. This is also used as the mirrored offset from the principal ray, so
+                that when uncropped the two z ROI windows sit flush against the image edges.
+            z_roi_min_width_ratio: The minimum width, as a ratio of the rectified image width, a
+                (possibly cropped) z ROI window must retain to be kept.
+
+        Returns:
+            A (x_roi_planners, z_roi_planners) pair of planner lists, as expected by the caller.
+        """
+        width, height = original_rectified_size
+        cx_ratio = planner.cx / width
+        cy_ratio = planner.cy / height
+
+        row_window = InitialCalibration._clip_window_to_canvas(cy_ratio, row_roi_factor)
+        assert row_window is not None, "Principal ray cy must fall within the rectified image."
+        row_width_ratio, row_offset_ratio = row_window
+
+        x_window = InitialCalibration._clip_window_to_canvas(cx_ratio, x_roi_width_ratio)
+        assert x_window is not None, "Principal ray cx must fall within the rectified image."
+        x_col_width_ratio, x_col_offset_ratio = x_window
+        x_roi_planners = [
+            windowed_planner_wrap(
+                planner, x_col_width_ratio, row_width_ratio, x_col_offset_ratio, row_offset_ratio
+            )
+        ]
+
+        # Initial z ROI window locations: the left-most and right-most windows of the canvas,
+        # fixed regardless of where the principal ray falls. Since they are anchored to the
+        # canvas edges by construction, they never need clipping on their own.
+        left_edges = (0.0, z_roi_width_ratio)
+        right_edges = (1.0 - z_roi_width_ratio, 1.0)
+
+        # Distance from the principal ray to each window's outer (canvas-boundary) edge, i.e.
+        # each window's position relative to cx, scaled so that 1.0 is the full image width.
+        dist_to_left_edge = cx_ratio
+        dist_to_right_edge = 1.0 - cx_ratio
+        further_edges = left_edges if dist_to_left_edge >= dist_to_right_edge else right_edges
+
+        z_roi_planners = []
+        # The further window is always fully within the canvas; keep it unmodified.
+        further_center_ratio = (further_edges[0] + further_edges[1]) / 2
+        further_window = InitialCalibration._clip_window_to_canvas(
+            further_center_ratio, z_roi_width_ratio
+        )
+        assert further_window is not None
+        further_width_ratio, further_offset_ratio = further_window
+        z_roi_planners.append(
+            windowed_planner_wrap(
+                planner,
+                further_width_ratio,
+                row_width_ratio,
+                further_offset_ratio,
+                row_offset_ratio,
+            )
+        )
+
+        # Coerce the closer window to sit at the further window's relative location, mirrored
+        # about the principal ray, then clip it to the canvas and enforce the minimum width.
+        further_rel = (further_edges[0] - cx_ratio, further_edges[1] - cx_ratio)
+        mirrored_center_ratio = cx_ratio - (further_rel[0] + further_rel[1]) / 2
+        closer_window = InitialCalibration._clip_window_to_canvas(
+            mirrored_center_ratio, z_roi_width_ratio
+        )
+        if closer_window is not None:
+            closer_width_ratio, closer_offset_ratio = closer_window
+            if closer_width_ratio >= z_roi_min_width_ratio:
+                z_roi_planners.append(
+                    windowed_planner_wrap(
+                        planner,
+                        closer_width_ratio,
+                        row_width_ratio,
+                        closer_offset_ratio,
+                        row_offset_ratio,
+                    )
+                )
 
         return x_roi_planners, z_roi_planners
 
