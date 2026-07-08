@@ -566,51 +566,60 @@ class InitialCalibration:
 
         # configure the ROI for FOM calculation.
         self.roi_directive = roi_directive
+        roi_planners = self._compute_golden_section_roi_planners(roi_directive, planner)
+        self.x_roi_planners, self.z_roi_planners = roi_planners
+        self.fom_x_roi = [FomCalculator.create(p, **fom_calc_kwargs) for p in self.x_roi_planners]
+        self.fom_z_roi = [FomCalculator.create(p, **fom_calc_kwargs) for p in self.z_roi_planners]
+
+    @staticmethod
+    def _compute_golden_section_roi_planners(
+        roi_directive: str, planner: pyhammer.cpyhammer.AbstractPlanner | None = None
+    ):
         if roi_directive == "horizontal":
             row_roi_factor = 1 / 2
             col_roi_factor = 1 / 3
-            self.x_roi_planners = [
-                windowed_planner_wrap(planner, col_roi_factor, row_roi_factor, 0, 0)
+            x_roi_planners = [
+                windowed_planner_wrap(planner, col_roi_factor, row_roi_factor, 0, 0),
             ]
-            self.z_roi_planners = [
+            z_roi_planners = [
                 windowed_planner_wrap(planner, col_roi_factor, row_roi_factor, col_roi_factor, 0),
                 windowed_planner_wrap(planner, col_roi_factor, row_roi_factor, -col_roi_factor, 0),
             ]
         elif roi_directive == "vertical":
             row_roi_factor = 1 / 3
             col_roi_factor = 1 / 2
-            self.x_roi_planners = [
+            x_roi_planners = [
                 windowed_planner_wrap(planner, col_roi_factor, row_roi_factor, 0, 0),
             ]
-            self.z_roi_planners = [
+            z_roi_planners = [
                 windowed_planner_wrap(planner, col_roi_factor, row_roi_factor, 0, row_roi_factor),
                 windowed_planner_wrap(planner, col_roi_factor, row_roi_factor, 0, -row_roi_factor),
             ]
         elif roi_directive == "center":
             row_roi_factor = 1 / 2
             col_roi_factor = 1 / 2
-            self.x_roi_planners = [
+            x_roi_planners = [
                 windowed_planner_wrap(planner, col_roi_factor, row_roi_factor, 0, 0),
             ]
-            self.z_roi_planners = [
+            z_roi_planners = [
                 windowed_planner_wrap(planner, col_roi_factor, row_roi_factor, 0, 0),
             ]
         elif roi_directive == "large_center":
             row_roi_factor = 3 / 4
             col_roi_factor = 3 / 4
-            self.x_roi_planners = [
+            x_roi_planners = [
                 windowed_planner_wrap(planner, col_roi_factor, row_roi_factor, 0, 0),
             ]
-            self.z_roi_planners = [
+            z_roi_planners = [
                 windowed_planner_wrap(planner, col_roi_factor, row_roi_factor, 0, 0),
             ]
         elif roi_directive == "full":
-            self.x_roi_planners = [planner]
-            self.z_roi_planners = [planner]
+            x_roi_planners = [planner]
+            z_roi_planners = [planner]
         else:
             raise NotImplementedError(f"roi_directive={roi_directive} is not implemented.")
-        self.fom_x_roi = [FomCalculator.create(p, **fom_calc_kwargs) for p in self.x_roi_planners]
-        self.fom_z_roi = [FomCalculator.create(p, **fom_calc_kwargs) for p in self.z_roi_planners]
+
+        return x_roi_planners, z_roi_planners
 
     @staticmethod
     def get_basic_refinement_specs() -> CalibrationSearchSpec:
